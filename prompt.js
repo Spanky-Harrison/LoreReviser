@@ -1,0 +1,177 @@
+// Builds the revision prompt ourselves (we do not capture a real "send"): see docs/milestone1-findings.md, section 3.
+//
+// The request is two chat messages:
+//   system: the user's editable system prompt + FORMAT_RULES (fixed, so editing the prompt can't break parsing)
+//   user:   <character_card> <active_lore> <chat_history> <entries_to_revise> <instructions>
+// Regeneration adds <previous_attempts> and <regeneration_request> and lists only the entry being redone.
+
+import { loadWorldInfo, getWorldInfoPrompt } from '../../../world-info.js';
+
+/** Fixed reply-format rules, appended after the user's system prompt. */
+export const FORMAT_RULES = `## Reply format (strict)
+Reply with ONE JSON array and nothing else: no commentary before or after it, no markdown code fences.
+Each element revises one entry from <entries_to_revise>:
+{"id": "E1", "keys": ["..."], "secondary_keys": ["..."], "content": "...", "note": "..."}
+
+Rules:
+- "id" is copied exactly from the entry's id attribute (E1, E2, ...).
+- Include ONLY entries you changed. Leave out every entry that needs no change. If nothing needs changing, reply [].
+- "content": the complete new text of the entry (not a diff). Leave this field out if the content stays the same.
+- "keys" and "secondary_keys": the complete new list of trigger keys. Leave a field out if that list stays the same.
+- "note": one short sentence saying what you changed and why.
+- Keep {{macros}}, @@decorator lines at the start of the content, and /regex/ keys exactly as they are, unless the user's instructions say otherwise.
+- The reply must be valid JSON: escape double quotes inside strings as \\" and line breaks as \\n.`;
+
+/** Short ids for the entries in one request: E1, E2, ... They map back to (book, uid) in the session. */
+export const entryId = (index) => `E${index + 1}`;
+
+const sub = (text) => SillyTavern.getContext().substituteParams(String(text ?? ''));
+
+/**
+ * Loads the full, current data of the selected entries.
+ * @param {Map<string, Set<number>>} selection book name -> selected entry uids
+ * @returns {Promise<object[]>} items with id, book, uid, title and `original` {keys, secondary, content}
+ */
+export async function loadSelectedEntries(selection) {
+    const items = [];
+    for (const [book, uids] of selection) {
+        if (!uids.size) continue;
+        const data = await loadWorldInfo(book);
+        for (const uid of [...uids].sort((a, b) => a - b)) {
+            const e = data?.entries?.[uid];
+            if (!e) continue;
+            items.push({
+                id: entryId(items.length), book, uid,
+                title: e.comment?.trim() || (e.key?.slice(0, 3).join(', ')) || `Entry #${uid}`,
+                original: { keys: [...(e.key ?? [])], secondary: [...(e.keysecondary ?? [])], content: e.content ?? '' },
+            });
+        }
+    }
+    return items;
+}
+
+/**
+ * Collects the parts of the prompt that do not depend on which entries are revised.
+ * Computed once per Send and reused for regenerations.
+ * @param {number} depth last X visible chat messages; 0 = all
+ */
+export async function gatherContext(depth) {
+    const ctx = SillyTavern.getContext();
+    const visible = ctx.chat.filter(m => !m.is_system); // hidden messages are not part of a normal prompt either
+    const shown = depth > 0 ? visible.slice(-depth) : visible;
+    const history = shown.map(m => `${m.name}: ${m.mes}`).join('\n\n');
+
+    // Character card fields (not available in some group-chat states)
+    let card = {};
+    try { card = ctx.getCharacterCardFields() ?? {}; } catch { /* no character selected */ }
+    const cardText = [
+        `Character: ${ctx.name2}`,
+        `User: ${ctx.name1}`,
+        card.description && `Description:\n${sub(card.description)}`,
+        card.personality && `Personality:\n${sub(card.personality)}`,
+        card.scenario && `Scenario:\n${sub(card.scenario)}`,
+        card.persona && `User persona:\n${sub(card.persona)}`,
+    ].filter(Boolean).join('\n\n');
+
+    // Lore that would be active in a normal send. Dry run: no timed-effect changes, no events.
+    // The scan input is newest-first, like Generate() builds it.
+    let lore = '';
+    try {
+        const scan = visible.map(m => `${m.name}: ${m.mes}`).reverse();
+        const wi = await getWorldInfoPrompt(scan, ctx.maxContext, true, {
+            personaDescription: card.persona ?? '', characterDescription: card.description ?? '',
+            characterPersonality: card.personality ?? '', characterDepthPrompt: card.charDepthPrompt ?? '',
+            scenario: card.scenario ?? '', creatorNotes: card.creatorNotes ?? '', trigger: 'normal',
+        });
+        const parts = [
+            wi.worldInfoBefore, wi.worldInfoAfter,
+            ...(wi.worldInfoDepth ?? []).flatMap(d => d.entries ?? []),
+            ...(wi.anBefore ?? []), ...(wi.anAfter ?? []),
+            ...Object.values(wi.outletEntries ?? {}).flat(),
+        ].filter(p => typeof p === 'string' && p.trim());
+        lore = sub(parts.join('\n\n'));
+    } catch (e) {
+        console.warn('[LoreReviser] could not compute active lore', e);
+    }
+
+    return { card: cardText, lore, history, messagesUsed: shown.length, messagesTotal: visible.length };
+}
+
+/** One entry as shown to the model. Keys are JSON arrays so commas inside regex keys stay unambiguous. */
+function entryBlock(item) {
+    const o = item.original;
+    return `<entry id="${item.id}" book=${JSON.stringify(item.book)} title=${JSON.stringify(item.title)}>
+<keys>${JSON.stringify(o.keys)}</keys>
+<secondary_keys>${JSON.stringify(o.secondary)}</secondary_keys>
+<content>
+${o.content}
+</content>
+</entry>`;
+}
+
+/** A previous attempt as JSON, in the same shape as a reply element. */
+const attemptJson = (a) => JSON.stringify({ keys: a.keys, secondary_keys: a.secondary, content: a.content });
+
+/**
+ * Builds the chat-completion message list.
+ * @param {object} p
+ * @param {string} p.systemPrompt the user's editable prompt
+ * @param {Awaited<ReturnType<typeof gatherContext>>} p.context
+ * @param {object[]} p.items entries to revise
+ * @param {string} p.instruction the user's instructions
+ * @param {object[]} [p.attempts] regeneration only: earlier attempts of the single entry
+ * @param {string} [p.regenNote] regeneration only: extra guidance
+ */
+export function buildMessages({ systemPrompt, context, items, instruction, attempts = null, regenNote = '' }) {
+    const sections = [
+        `<character_card>\n${context.card}\n</character_card>`,
+        `<active_lore>\n${context.lore || '(none active)'}\n</active_lore>`,
+        `<chat_history messages="${context.messagesUsed} of ${context.messagesTotal}">\n${context.history || '(empty)'}\n</chat_history>`,
+        `<entries_to_revise>\n${items.map(entryBlock).join('\n')}\n</entries_to_revise>`,
+        `<instructions>\n${instruction}\n</instructions>`,
+    ];
+    if (attempts) {
+        const id = items[0].id;
+        sections.push(`<previous_attempts entry="${id}">\n${attempts.map((a, i) =>
+            `<attempt n="${i + 1}"${a.edited ? ' edited_by_user="true"' : ''}>${attemptJson(a)}</attempt>`).join('\n')}\n</previous_attempts>`);
+        sections.push(`<regeneration_request>\nThe user wants a new version of entry ${id}. Write a different, better version than the previous attempts`
+            + `${regenNote.trim() ? `, following this extra guidance: ${regenNote.trim()}` : ''}. Reply with a JSON array containing only entry ${id}.\n</regeneration_request>`);
+    } else {
+        sections.push('Reply with the JSON array only.');
+    }
+    return [
+        { role: 'system', content: `${systemPrompt.trim()}\n\n${FORMAT_RULES}` },
+        { role: 'user', content: sections.join('\n\n') },
+    ];
+}
+
+/** Rough token count of a message list. */
+export async function countTokens(messages) {
+    const { getTokenCountAsync } = SillyTavern.getContext();
+    return getTokenCountAsync(messages.map(m => m.content).join('\n\n'));
+}
+
+/**
+ * Context size to compare against: the user's override, else the profile's preset, else the main connection.
+ * @returns {{limit: number, source: string}}
+ */
+export function resolveContextLimit(profile, settings) {
+    const ctx = SillyTavern.getContext();
+    if (settings.contextLimit > 0) return { limit: settings.contextLimit, source: 'your "Context" setting' };
+    try {
+        if (ctx.CONNECT_API_MAP[profile.api]?.selected === 'openai' && profile.preset) {
+            const preset = ctx.getPresetManager('openai')?.getCompletionPresetByName(profile.preset);
+            if (preset?.openai_max_context > 0) return { limit: Number(preset.openai_max_context), source: `preset "${profile.preset}"` };
+        }
+    } catch { /* fall through */ }
+    return { limit: ctx.maxContext, source: 'your main connection' };
+}
+
+/** Reply budget: the user's setting, or an estimate from the size of the entries being revised. */
+export async function resolveReplyTokens(settings, items) {
+    if (settings.replyTokens > 0) return settings.replyTokens;
+    const { getTokenCountAsync } = SillyTavern.getContext();
+    const text = items.map(i => i.original.content + JSON.stringify(i.original.keys) + JSON.stringify(i.original.secondary)).join('\n');
+    const entryTokens = await getTokenCountAsync(text);
+    return Math.min(16000, Math.max(1500, Math.ceil(entryTokens * 1.3) + 500));
+}

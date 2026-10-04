@@ -1,12 +1,19 @@
 // The LoreReviser modal: profile + system prompt settings, linked-lorebook sidebar, chat-style window.
-// Milestone 2: no model calls. "Send" only echoes the instruction.
+// Send builds one prompt (prompt.js), sends it on the chosen profile (revision.js) and shows the proposed
+// changes as review cards (review.js). Approving does not write to lorebooks yet (apply.js, milestone 4).
 
 import { Popup, POPUP_TYPE } from '../../../popup.js';
 import { getLinkedBooks } from './lorebooks.js';
 import { MODULE_NAME, getSettings, DEFAULT_SYSTEM_PROMPT } from './settings.js';
+import { prepareSession, sendSession, runState, describeError } from './revision.js';
+import { renderSession } from './review.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
+/** Redraws the chat window of the currently open modal (set by openModal; async work finishes after the modal may be closed). */
+let redraw = () => {};
+/** Aborts the running Send request, if any. */
+let abortSend = null;
 SillyTavern.getContext().eventSource.on(SillyTavern.getContext().eventTypes.CHAT_CHANGED, () => { conversation = []; });
 
 // ---------- selection (which books/entries are ticked), saved per chat in chat metadata ----------
@@ -58,6 +65,10 @@ const TEMPLATE = `
         <label title="Send only the last X chat messages. 0 = whole chat.">Depth
             <input id="lorerev_depth" type="number" min="0" step="1" class="text_pole"></label>
         <span id="lorerev_depth_info" class="lorerev_dim"></span>
+        <label title="Maximum tokens for the model's reply. 0 = automatic (based on the size of the selected entries).">Reply tokens
+            <input id="lorerev_reply" type="number" min="0" step="100" class="text_pole"></label>
+        <label title="Context size used for the 'prompt may be too large' warning. 0 = take it from the profile's preset.">Context
+            <input id="lorerev_context" type="number" min="0" step="1000" class="text_pole"></label>
     </div>
     <div class="lorerev_body">
         <div class="lorerev_sidebar">
@@ -111,6 +122,12 @@ export async function openModal() {
         updateDepthInfo();
     });
     updateDepthInfo();
+
+    // reply token budget and context limit (0 = automatic)
+    for (const [sel, key] of [['#lorerev_reply', 'replyTokens'], ['#lorerev_context', 'contextLimit']]) {
+        const $n = $root.find(sel).val(settings[key]);
+        $n.on('input', () => { settings[key] = Math.max(0, Math.floor(Number($n.val()) || 0)); save(); });
+    }
 
     // --- system prompt ---
     const $system = $root.find('#lorerev_system').val(settings.systemPrompt);
@@ -194,23 +211,38 @@ export async function openModal() {
 
     // --- chat-style window ---
     const $chat = $root.find('#lorerev_chat');
-    function renderChat() {
+    function renderChat({ keepScroll = false } = {}) {
+        const top = $chat.scrollTop();
+        $chat.children().detach(); // detach (not empty) so cached review cards keep their event handlers
         $chat.empty();
         if (!conversation.length) {
             $chat.append($('<div class="lorerev_dim">').text('Pick lore entries on the left, then describe what should be updated.'));
         }
         for (const m of conversation) {
-            $chat.append($('<div class="lorerev_msg">').addClass(`lorerev_${m.role}`).text(m.text));
+            if (m.role === 'session') {
+                m.session.$el ??= renderSession(m.session, {});
+                $chat.append(m.session.$el);
+                continue;
+            }
+            const $m = $('<div class="lorerev_msg">').addClass(`lorerev_${m.role}`).text(m.text);
+            if (m.role === 'loading') {
+                $m.prepend($('<i class="fa-solid fa-spinner fa-spin">'), ' ');
+                $m.append(' ', $('<span class="menu_button lorerev_cancel">Cancel</span>').on('click', () => abortSend?.()));
+            }
+            if (m.raw) $m.append($('<details class="lorerev_raw" open>').append($('<summary>Raw reply</summary>'), $('<pre class="lorerev_pre">').text(m.raw)));
+            $chat.append($m);
         }
-        $chat.scrollTop($chat[0].scrollHeight);
+        $root.find('#lorerev_send').toggleClass('disabled', runState.busy);
+        $chat.scrollTop(keepScroll ? top : $chat[0].scrollHeight);
     }
+    redraw = renderChat;
 
     /** Shows an error as a toast and as a red message in the chat window (replacing a previous error). */
     function showError(text) {
         toastr.error(text, 'LoreReviser');
         if (conversation.at(-1)?.role === 'error') conversation.pop();
         conversation.push({ role: 'error', text });
-        renderChat();
+        redraw();
     }
 
     /** The chosen Connection Manager profile, or null. The placeholder option (empty value) counts as none. */
@@ -222,7 +254,14 @@ export async function openModal() {
         } catch { return null; }
     }
 
-    function send() {
+    /** Replaces the "waiting" message (if any) with the given messages. */
+    function finishLoading(...messages) {
+        conversation = conversation.filter(m => m.role !== 'loading');
+        conversation.push(...messages);
+        redraw();
+    }
+
+    async function send() {
         const $input = $root.find('#lorerev_input');
         const text = String($input.val()).trim();
         const profile = getChosenProfile();
@@ -232,17 +271,50 @@ export async function openModal() {
         if (!profile) return showError('Select a connection profile first.');
         if (!picked) return showError('Select at least one lorebook entry in the sidebar first.');
         if (!text) return showError('Write instructions first: what should be updated in the selected lore?');
+        if (runState.busy) return showError('A request is still running. Wait for it or cancel it first.');
 
         $input.val('');
         conversation = conversation.filter(m => m.role !== 'error'); // drop stale errors
-        const { used, total } = messageCounts(settings.depth);
-        conversation.push({ role: 'user', text });
-        conversation.push({
-            role: 'assistant',
-            text: `Revision isn't implemented yet (coming in a later milestone). Nothing was sent to a model.\n`
-                + `Would use: ${picked} selected entries, ${used} of ${total} chat messages, profile "${profile.name}".`,
-        });
-        renderChat();
+        conversation.push({ role: 'user', text }, { role: 'loading', text: 'Building the prompt…' });
+        runState.busy = true;
+        const abort = new AbortController();
+        abortSend = () => abort.abort();
+        redraw();
+
+        try {
+            // 1. build the prompt and check its size (warn only)
+            const session = await prepareSession({ profile, settings, selection, instruction: text });
+            const t = session.tokens;
+            if (t.tooBig) {
+                const warn = `The prompt is about ${t.promptTokens} tokens and the reply may use up to ${t.maxTokens}, which may not fit in the context of ${t.limit} tokens (from ${t.source}). Sending anyway; if it fails or is cut off, select fewer entries, lower the depth, or raise "Context" if your model allows more.`;
+                toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
+                conversation.splice(-1, 0, { role: 'warn', text: warn });
+            }
+            conversation.at(-1).text = `Waiting for "${profile.name}" (about ${t.promptTokens} prompt tokens, up to ${t.maxTokens} reply tokens)…`;
+            redraw({ keepScroll: false });
+
+            // 2. send and parse
+            await sendSession(session, abort.signal);
+            if (session.status === 'cancelled') return finishLoading({ role: 'assistant', text: 'Cancelled.' });
+            if (session.status === 'failed') {
+                const parseFailure = session.parse?.error;
+                toastr.error(session.error, 'LoreReviser');
+                return finishLoading({
+                    role: 'error',
+                    text: parseFailure ? `The model's reply could not be used: ${session.error} The raw reply is shown below.` : `The request failed: ${session.error}`,
+                    raw: parseFailure ? session.rawReplies.at(-1) : null,
+                });
+            }
+            finishLoading({ role: 'session', session });
+        } catch (e) {
+            console.error('[LoreReviser]', e);
+            toastr.error(describeError(e), 'LoreReviser');
+            finishLoading({ role: 'error', text: `Something went wrong: ${describeError(e)}` });
+        } finally {
+            runState.busy = false;
+            abortSend = null;
+            redraw();
+        }
     }
     $root.find('#lorerev_send').on('click', send);
     $root.find('#lorerev_input').on('keydown', (e) => {

@@ -149,18 +149,7 @@ try {
   check('empty instruction: nothing echoed', (await userMsgs()) === 0);
   check('only one error message kept (replaced, not stacked)', (await page.locator('.lorerev_msg.lorerev_error').count()) === 1);
 
-  // valid send
-  await page.fill('#lorerev_input', 'Update the queen\'s age.');
-  await page.click('#lorerev_send');
-  const msgs = await page.$$eval('.lorerev_msg:not(.lorerev_error)', els => els.map(e => e.textContent));
-  console.log('msgs:', msgs);
-  check('valid send echoes user message and not-implemented reply', msgs[0] === "Update the queen's age." && /isn't implemented yet/.test(msgs[1]) && /5 selected entries, 3 of 8 chat messages/.test(msgs[1]) && /Profile B \(KoboldCpp\)/.test(msgs[1]), msgs[1]);
-  await page.screenshot({ path: `${SHOTS}/08-send-echo.png` });
-
-  // Enter key sends
-  await page.fill('#lorerev_input', 'second');
-  await page.press('#lorerev_input', 'Enter');
-  check('Enter sends', (await userMsgs()) === 2);
+  // (successful sends are covered by e2e-revision.mjs, which has a fake model server)
 
   // close
   await page.click('dialog[open] .popup-button-ok');
@@ -175,7 +164,6 @@ try {
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
   check('reopen: depth restored', (await page.inputValue('#lorerev_depth')) === '3');
-  check('reopen: conversation kept', (await page.locator('.lorerev_msg.lorerev_user').count()) === 2);
   await page.click('dialog[open] .popup-button-ok');
   await page.waitForTimeout(800);
 
