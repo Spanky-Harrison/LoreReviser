@@ -6,7 +6,7 @@ The example below is a real request captured by the test suite (`tests/e2e-revis
 
 ## Request
 
-Two chat messages, plus `max_tokens` (the "Reply tokens" setting, or automatic: about 1.3x the size of the selected entries + 500, between 1500 and 16000).
+Two chat messages, plus `max_tokens` (the "Reply tokens" setting, or automatic: about 2x the size of the selected entries + 2500, between 4096 and 32000).
 The profile's preset supplies the sampler settings (temperature etc.). For a text-completion profile the two messages are turned into one string with the profile's instruct template (`ConnectionManagerRequestService.constructPrompt`; untested).
 
 1. **system** = the editable system prompt from the modal + the fixed "Reply format" rules (so editing the prompt cannot break parsing).
@@ -27,7 +27,8 @@ A JSON array. Only changed entries; everything else is left out:
 
 - `keys`, `secondary_keys` and `content` may be left out when unchanged. `note` is optional and shown on the card.
 - Parsing is tolerant: code fences, text around the JSON, `<think>` blocks, trailing commas, a `{"entries": [...]}` wrapper, a single object.
-- Truncated replies (cut off by the token limit) are detected: every complete entry is kept, the rest are shown as "Not returned" (not as "No changes"), and a warning explains what happened.
+- Raw line breaks and unescaped quotes inside JSON strings, and invalid escapes, are repaired automatically (a small note says so).
+- A reply that ends inside the JSON is detected (also reported: `finish_reason`, tokens received, tokens allowed, thinking tokens when the backend says): every complete entry is kept, the rest are shown as "Not returned", and "Retry missing entries" re-asks for just those. An entry that is simply absent from a complete array is "No changes".
 - Entries that are left out, or returned identical to the original, are shown as "No changes".
 - If nothing can be read, the raw reply is shown in the chat window. The raw reply of every request is also available under "Raw reply" in each revision.
 - Warnings (shown on the card, never blocking): a leading `@@decorator` line, a `/regex/` key, or a `{{macro}}` that the original had and the proposal lacks.
