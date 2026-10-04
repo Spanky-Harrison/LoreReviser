@@ -436,6 +436,37 @@ try {
   check('R: text kept exactly (line breaks and quotes)', (await card('Festival of Lanterns').locator('.lorerev_text').textContent()) === 'Line one.\nLine two with a "quoted" word.\nLine three.');
   check('R: omitted entries show "No changes", not "Not returned"', (await session().locator('.lorerev_pill_missing').count()) === 0 && (await session().locator('.lorerev_pill_unchanged').count()) >= 1);
 
+  // ================= S. depth -1: no chat history at all (also on regenerate); depth 0 = whole chat =================
+  await page.fill('#lorerev_depth', '-1');
+  check('S: label says no chat will be sent', (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Queen Maren}}","content":"Stern but fair monarch, 55 years old."}]' }]);
+  await send('Depth minus one: only update the queen\'s age to 55.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 11);
+  const sq = await lastReq(); const su = userMsg(sq);
+  check('S: <chat_history> is explicitly empty and no chat text is sent', /<chat_history messages="0 of 8">\n\(No chat history is provided/.test(su) && !/Message number \d/.test(su) && !su.includes('Greetings, traveler.'), su.slice(su.indexOf('<chat_history'), su.indexOf('<chat_history') + 200));
+  check('S: card, active lore, entries and instructions are still sent', su.includes('<character_card>\nCharacter: Test Queen') && su.includes('Silver crowns.') && /<entry id="E\d" book="Eldoria" title="Queen Maren">/.test(su) && su.includes('Depth minus one: only update'));
+  check('S: proposal reviewed as usual', (await pill('Queen Maren').textContent()) === 'Proposed');
+  await shot('32b-depth-minus-one-review.png');
+  // regenerate path keeps sending no chat
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Queen Maren}}","content":"Second try, 55."}]' }]);
+  await card('Queen Maren').locator('.menu_button', { hasText: 'Regenerate…' }).click();
+  await card('Queen Maren').locator('.lorerev_regen .menu_button').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
+  const sr = userMsg(await lastReq());
+  check('S: regenerate also sends no chat history', /<chat_history messages="0 of 8">\n\(No chat history is provided/.test(sr) && !/Message number \d/.test(sr) && sr.includes('<previous_attempts'));
+  // depth 0 = whole chat again
+  await page.fill('#lorerev_depth', '0');
+  await fake.reset();
+  await fake.queue([{ content: '[]' }]);
+  await send('Depth zero: whole chat.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 12);
+  const sz = userMsg(await lastReq());
+  check('S: depth 0 still sends the whole visible chat', /<chat_history messages="8 of 8">/.test(sz) && sz.includes('Message number 1') && sz.includes('Message number 8') && !sz.includes('hidden message'));
+  // stored setting survives
+  check('S: depth setting stored as -1 after toggling back and forth', await (async () => { await page.fill('#lorerev_depth', '-1'); return (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.depth)) === -1; })());
+
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
 } catch (e) {
   console.log('TEST ERROR', e); failures++;

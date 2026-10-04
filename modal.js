@@ -7,6 +7,7 @@ import { getLinkedBooks } from './lorebooks.js';
 import { MODULE_NAME, getSettings, DEFAULT_SYSTEM_PROMPT } from './settings.js';
 import { prepareSession, sendSession, runState, describeError } from './revision.js';
 import { renderSession } from './review.js';
+import { normalizeDepth, depthLabel } from './depth.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -34,12 +35,6 @@ function saveSelection(selection) {
 
 // ---------- small helpers ----------
 
-/** Last-X-messages count: visible (non-hidden) chat messages, limited by depth (0 = all). */
-function messageCounts(depth) {
-    const total = SillyTavern.getContext().chat.filter(m => !m.is_system).length;
-    return { total, used: depth > 0 ? Math.min(depth, total) : total };
-}
-
 /** Fills the profile dropdown from Connection Manager. Built by hand (ST's helper adds event listeners on every call). */
 function fillProfileSelect($select, selectedId) {
     const { ConnectionManagerRequestService } = SillyTavern.getContext();
@@ -62,8 +57,8 @@ const TEMPLATE = `
     <div class="lorerev_header">
         <h3>LoreReviser</h3>
         <label>Profile <select id="lorerev_profile" class="text_pole"></select></label>
-        <label title="Send only the last X chat messages. 0 = whole chat.">Depth
-            <input id="lorerev_depth" type="number" min="0" step="1" class="text_pole"></label>
+        <label title="Send only the last X chat messages. 0 = whole chat. -1 = no chat at all.">Depth
+            <input id="lorerev_depth" type="number" min="-1" step="1" class="text_pole"></label>
         <span id="lorerev_depth_info" class="lorerev_dim"></span>
         <label title="Maximum tokens for the model's reply. 0 = automatic (based on the size of the selected entries).">Reply tokens
             <input id="lorerev_reply" type="number" min="0" step="100" class="text_pole"></label>
@@ -113,11 +108,12 @@ export async function openModal() {
 
     const $depth = $root.find('#lorerev_depth').val(settings.depth);
     const updateDepthInfo = () => {
-        const { total, used } = messageCounts(settings.depth);
-        $root.find('#lorerev_depth_info').text(`${used} of ${total} messages will be sent`);
+        const total = SillyTavern.getContext().chat.filter(m => !m.is_system).length; // visible (non-hidden) messages
+        $root.find('#lorerev_depth_info').text(depthLabel(settings.depth, total));
     };
     $depth.on('input', () => {
-        settings.depth = Math.max(0, Math.floor(Number($depth.val()) || 0));
+        settings.depth = normalizeDepth($depth.val());
+        if (String($depth.val()) !== '' && Number($depth.val()) !== settings.depth) $depth.val(settings.depth); // e.g. -5 -> -1, 2.7 -> 2
         save();
         updateDepthInfo();
     });

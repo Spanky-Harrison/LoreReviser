@@ -113,6 +113,18 @@ try {
   await page.fill('#lorerev_depth', '3');
   const info1 = await page.textContent('#lorerev_depth_info');
   check('depth 3 -> 3 of 8', info1 === '3 of 8 messages will be sent', info1);
+  // depth -1 = no chat at all
+  check('depth input allows -1 (min attribute)', (await page.getAttribute('#lorerev_depth', 'min')) === '-1');
+  await page.fill('#lorerev_depth', '-1');
+  check('depth -1 -> "No chat will be sent"', (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent', await page.textContent('#lorerev_depth_info'));
+  await page.fill('#lorerev_depth', '-5');
+  check('depth -5 is clamped to -1', (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
+  await page.screenshot({ path: `${SHOTS}/32-depth-minus-one.png` });
+  await page.fill('#lorerev_depth', '0');
+  check('depth 0 stays "whole chat"', (await page.textContent('#lorerev_depth_info')) === '8 of 8 messages will be sent');
+  await page.fill('#lorerev_depth', '2.7');
+  check('depth 2.7 -> 2', (await page.inputValue('#lorerev_depth')) === '2' && (await page.textContent('#lorerev_depth_info')) === '2 of 8 messages will be sent');
+  await page.fill('#lorerev_depth', '-1'); // stays -1 for the persistence checks below
 
   // ---- send validation ----
   const nMsgs = () => page.locator('.lorerev_msg').count();
@@ -163,7 +175,7 @@ try {
   check('reopen: selection restored', (await page.textContent('#lorerev_selected_info')) === '5 entries selected in 2 book(s)');
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
-  check('reopen: depth restored', (await page.inputValue('#lorerev_depth')) === '3');
+  check('reopen: depth -1 restored with its label', (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
   await page.click('dialog[open] .popup-button-ok');
   await page.waitForTimeout(800);
 
@@ -177,7 +189,7 @@ try {
   const persisted = await page.evaluate(() => JSON.stringify(SillyTavern.getContext().extensionSettings.LoreReviser));
   console.log('after reload settings:', persisted);
   const p = JSON.parse(persisted);
-  check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === 3);
+  check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === -1);
 } catch (e) {
   console.log('TEST ERROR', e);
   failures++;
