@@ -45,9 +45,9 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 ## Open questions
 - None currently.
 
-## Milestones (proposed)
+## Milestones
 1. ~~Verify ST APIs~~ Done: see `docs/milestone1-findings.md`.
-2. Modal and sidebar with no model calls: wand entry, large modal, chat-style window, profile selector, editable system prompt, linked-lorebook sidebar with checkboxes, depth setting. Plus README with install steps.
-3. Revision call and review UI. Includes building the prompt ourselves, the token pre-flight check, truncation detection and the "retry with fewer entries" path.
-4. Approve/write, archive (file naming, index, relink for renames), and history/restore.
+2. ~~Modal and sidebar with no model calls~~ Done (wand entry, wide modal, chat window, profile selector, editable system prompt, linked-lorebook sidebar, depth setting, README).
+3. ~~Revision call and review UI~~ Built and tested against a scripted fake model server; **still to do: try it with a real model** and adjust the default prompt/format if needed. Prompt and reply format: `docs/prompt-format.md`. Differences from the plan: when a reply is cut off, the user is told to select fewer entries / raise "Reply tokens" (no automatic "retry with fewer entries" button), and the context limit comes from the profile's preset or a "Context" box in the modal.
+4. Approve/write, archive (file naming, index, relink for renames), and history/restore. Hook: `applyApproval()` in `apply.js` is called on Approve and currently only reports that nothing was saved.
 5. New-entry function.

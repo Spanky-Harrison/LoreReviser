@@ -11,7 +11,7 @@
 .lorerev_header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 .lorerev_header h3 { margin: 0; }
 .lorerev_header label { display: flex; align-items: center; gap: 6px; }
-.lorerev_header input[type="number"] { width: 70px; }
+
 .lorerev_dim { opacity: 0.6; font-size: 0.9em; }
 .lorerev_body { display: flex; flex: 1; min-height: 0; gap: 10px; padding-top: 8px; }
 
@@ -42,3 +42,49 @@
     .lorerev_body { flex-direction: column; }
     .lorerev_sidebar { flex: 0 0 35%; max-width: none; padding-right: 0; border-right: none; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 }
+
+/* ---------- milestone 3: header inputs, messages ---------- */
+.lorerev_header input[type="number"] { width: 80px; }
+.lorerev_msg.lorerev_warn { background: rgba(190, 140, 20, 0.35); border: 1px solid #c9a227; max-width: 100%; }
+.lorerev_msg.lorerev_loading { background: var(--SmartThemeBotMesBlurTintColor); display: flex; align-items: center; gap: 8px; }
+.lorerev_cancel { margin-left: auto; }
+#lorerev_send.disabled { opacity: 0.5; pointer-events: none; }
+.lorerev_pre { white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; background: rgba(0, 0, 0, 0.35); padding: 6px; border-radius: 6px; font-size: 0.85em; }
+.lorerev_raw { margin-top: 6px; }
+
+/* ---------- review session and cards ---------- */
+.lorerev_session { border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 8px; margin-bottom: 10px; }
+.lorerev_session_head { margin-bottom: 6px; }
+.lorerev_warn { color: #e8c15a; margin: 4px 0; }
+.lorerev_session_notes .lorerev_warn { background: rgba(190, 140, 20, 0.2); border-radius: 6px; padding: 4px 8px; }
+.lorerev_card { border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 8px; margin: 8px 0; background: rgba(0, 0, 0, 0.12); }
+.lorerev_status_unchanged, .lorerev_status_rejected { opacity: 0.7; }
+.lorerev_status_approved { border-color: #3c9a55; }
+.lorerev_status_missing { border-color: #c9a227; }
+.lorerev_card_title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.lorerev_pill { font-size: 0.75em; padding: 1px 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.12); }
+.lorerev_pill_proposed { background: rgba(70, 130, 220, 0.5); }
+.lorerev_pill_approved { background: rgba(60, 154, 85, 0.6); }
+.lorerev_pill_missing { background: rgba(190, 140, 20, 0.6); }
+.lorerev_pager { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.lorerev_pg { padding: 0 10px; margin: 0; }
+.lorerev_note { font-style: italic; margin: 4px 0; }
+.lorerev_keys { margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.lorerev_chip { padding: 0 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.1); font-size: 0.9em; }
+.lorerev_chip_del { background: rgba(200, 60, 60, 0.35); text-decoration: line-through; }
+.lorerev_chip_ins { background: rgba(60, 160, 90, 0.4); }
+.lorerev_views { display: flex; gap: 4px; margin: 6px 0 2px; }
+.lorerev_view { cursor: pointer; padding: 0 10px; border-radius: 10px; opacity: 0.65; border: 1px solid var(--SmartThemeBorderColor); font-size: 0.85em; }
+.lorerev_view_on { opacity: 1; background: rgba(255, 255, 255, 0.15); }
+.lorerev_text { white-space: pre-wrap; padding: 6px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.2); line-height: 1.45; }
+.lorerev_ins { background: rgba(60, 160, 90, 0.35); border-radius: 3px; }
+.lorerev_del { background: rgba(200, 60, 60, 0.3); text-decoration: line-through; border-radius: 3px; }
+.lorerev_buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.lorerev_btn_ok { border-color: #3c9a55; }
+.lorerev_btn_no { border-color: #b04040; }
+.lorerev_regen { display: flex; gap: 6px; margin-top: 6px; align-items: stretch; }
+.lorerev_regen textarea { flex: 1; resize: vertical; }
+.lorerev_edit input, .lorerev_edit textarea { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+.lorerev_edit label { display: block; font-size: 0.85em; opacity: 0.75; }
+.lorerev_ok_line { color: #6fcf8a; margin: 4px 0; }
+.lorerev_error_line { color: #ff8a8a; margin: 4px 0; }

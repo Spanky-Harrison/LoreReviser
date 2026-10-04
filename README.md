@@ -3,11 +3,11 @@
 A SillyTavern extension that reads and updates lorebooks to reflect story and character changes.
 See [PLAN.md](PLAN.md) for the design and milestones, and [docs/milestone1-findings.md](docs/milestone1-findings.md) for the SillyTavern API research.
 
-**Status: milestone 2 (UI skeleton).** The modal, lorebook sidebar, profile selector, system prompt and depth setting work. **No model calls are made yet**: Send only echoes your instruction.
+**Status: milestone 3 (revision and review).** Send asks the model to revise the selected entries and shows the proposals for review. **Approve only marks an entry as approved: nothing is written to your lorebooks yet** (writing and the archive come in milestone 4). Tested with a scripted fake model; not yet with a real model.
 
 Requires SillyTavern **1.19.0 or newer** (the Connection Manager extension must be enabled, which it is by default).
 
-![Modal](docs/screenshots/modal-expanded.png)
+![Review cards](docs/screenshots/review-cards.png)
 
 ## What it does now
 - Adds **LoreReviser** to the wand (extensions) menu next to the chat input. It opens a large modal.
@@ -16,6 +16,17 @@ Requires SillyTavern **1.19.0 or newer** (the Connection Manager extension must 
 - **System prompt:** editable, with a reset button. Saved in extension settings.
 - **Depth:** send only the last X chat messages (0 = whole chat; hidden messages are not counted).
 - **Chat window:** type instructions and press Enter (Shift+Enter for a new line). Sending needs a profile, at least one selected entry, and non-empty instructions; otherwise a red error is shown and nothing is sent.
+- **Reply tokens / Context:** the reply budget (0 = automatic) and the context size used for the "prompt may be too large" warning (0 = taken from the profile's preset). The warning never blocks sending.
+
+## How a revision works
+1. Pick entries in the sidebar, write what should change, press Send. One request goes to the chosen profile with your system prompt, the character card, the lore that is active right now, the last X chat messages (Depth), the full text and keys of every selected entry, and your instructions. Exact format: [docs/prompt-format.md](docs/prompt-format.md).
+2. The model answers with the entries it changed. Each shows up as a card with the key changes and a word-level diff (Changes / New / Old views). Entries the model did not change are shown as "No changes".
+3. Per card: **Approve** (marks it; nothing is saved yet), **Reject**, **Edit** (change the keys and text yourself first), **Regenerate…** (optionally with new guidance; the model sees its earlier attempts for that entry, and you can page between attempts with ‹ ›).
+4. Yellow warnings appear when a proposal drops a `@@decorator` line, a `/regex/` key or a `{{macro}}` the original had.
+5. If the reply is cut off, the complete entries are kept, the rest show as "Not returned", and a warning tells you to raise Reply tokens or select fewer entries. If the reply can't be read at all, you see an error plus the raw reply. Every revision also has a "Raw reply" section.
+6. **Cancel** stops a running request. Models that "think" before answering use part of the reply tokens for that; raise Reply tokens if replies get cut off.
+
+Things to know: the lore being revised is usually also part of the "active lore" in the prompt (the model is told). Group chats are untested. Text-completion profiles are untested (chat-completion profiles are what the tests use).
 
 ## Install on Windows (PowerShell)
 
@@ -57,11 +68,17 @@ If it does not appear, check the Extensions panel for load errors and the browse
 |---|---|
 | `manifest.json` | Extension manifest |
 | `index.js` | Entry point: adds the wand menu item |
-| `modal.js` | The modal UI (settings, sidebar, chat window) |
+| `modal.js` | The modal UI (settings, sidebar, chat window, Send flow) |
+| `prompt.js` | Builds the revision prompt, token estimate and context limit |
+| `revision.js` | Sends the request on the profile, turns replies into review items, regenerate |
+| `parse.js` | Tolerant reader for the model's JSON reply, integrity warnings |
+| `diff.js` | Word diff and key-list diff for the cards |
+| `review.js` | The review cards (approve / reject / edit / regenerate / paging) |
+| `apply.js` | Stub: writing approved changes to the lorebook (milestone 4) |
 | `lorebooks.js` | Finds the lorebooks linked to the current chat and lists their entries |
 | `settings.js` | Extension settings and defaults |
 | `style.css` | Styling |
 | `tests/` | Headless-browser test scripts (see `tests/README.md`) |
 
 ## Tests
-`tests/` has a Playwright script that starts a throwaway SillyTavern, seeds test lorebooks, and drives the modal in headless Chrome. See `tests/README.md`.
+`tests/` has unit tests for the parser and diff, and Playwright scripts that start a throwaway SillyTavern, seed test lorebooks, and drive the modal in headless Chrome, including a fake OpenAI-compatible model server with scripted replies (normal, truncated, malformed, error, slow). See `tests/README.md`; `tests/run-all.sh` runs everything.
