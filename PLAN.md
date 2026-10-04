@@ -31,12 +31,15 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 - Each entry has a History view with one-click restore.
 - Written through ST's file upload endpoint (to verify on the user's ST version before committing).
 
+## Resolved questions
+- **Regeneration works like swipes.** Each regeneration shows the model its previous attempt(s) for that entry, plus any new instructions, and the user can page back and forth between attempts for an entry.
+- **Output format.** The model's reply is parsed into JSON for writing to ST, while the user sees it as readable text in the review UI. The exact format the model emits (JSON vs. delimited blocks) will be tested with a real model during milestone 3.
+- **Scope of revisions.** Content and keys only. No other entry settings (title, position, order, etc.) are touched.
+- **New entries.** The user picks the target lorebook. Proposed entries use the same review format as revisions (approve / edit / regenerate). The user can optionally pick an existing entry to copy its detailed settings from (everything except content, title, and keys); otherwise the defaults are used.
+- **ST version.** Latest release only.
+
 ## Open questions
-- Should a regeneration also show the model its previous attempt for that entry?
-- What output format should the model use (JSON per entry vs. delimited blocks)? Needs a test with a real model.
-- Should revisions also touch other settings (comment/title, position, order, etc.), or only content and keys?
-- How should the new-entry function pick the target lorebook and show proposed entries for approval?
-- Which ST version(s) must this support?
+- None currently.
 
 ## Milestones (proposed)
 1. Verify ST APIs: reading and writing lorebooks, listing chat-linked books, connection profile requests, file saving.
