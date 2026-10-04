@@ -21,9 +21,9 @@ try {
   const setup = await page.evaluate(async () => {
     const ctx = SillyTavern.getContext();
     const wi = await import('/scripts/world-info.js');
-    wi.updateWorldInfoSettings({}, ['Global Lore']);
+    wi.updateWorldInfoSettings({}, ['Global Lore', 'The Wishing Game - Frankie']);
     ctx.powerUserSettings.persona_description_lorebook = 'Persona Lore';
-    wi.charSetAuxWorlds('Test Queen', ['Eldoria Extras']);
+    wi.charSetAuxWorlds('Test Queen', ['Eldoria Extras', 'Intimate Encounters - Complete Compendium']);
     ctx.extensionSettings.connectionManager.profiles.push(
       { id: 'prof-a', name: 'Profile A (Chat Completion)', mode: 'cc', api: 'openai', model: 'test-model' },
       { id: 'prof-b', name: 'Profile B (KoboldCpp)', mode: 'tc', api: 'koboldcpp', model: 'x' });
@@ -51,12 +51,25 @@ try {
   await page.waitForSelector('.lorerev_book');
   const bookNames = await page.$$eval('.lorerev_book_name', els => els.map(e => e.textContent));
   console.log('books:', bookNames);
-  check('sidebar lists exactly the 5 linked books', JSON.stringify([...bookNames].sort()) === JSON.stringify(['Chat Lore', 'Eldoria', 'Eldoria Extras', 'Global Lore', 'Persona Lore']));
+  check('sidebar lists exactly the 7 linked books', JSON.stringify([...bookNames].sort()) === JSON.stringify(['Chat Lore', 'Eldoria', 'Eldoria Extras', 'Global Lore', 'Intimate Encounters - Complete Compendium', 'Persona Lore', 'The Wishing Game - Frankie']));
   check('unlinked book hidden', !bookNames.includes('Unlinked Book'));
   const sources = await page.$$eval('.lorerev_book', els => Object.fromEntries(els.map(e => [e.dataset.book, e.querySelector('.lorerev_book_sources').textContent])));
   console.log('sources:', sources);
   check('source labels', sources['Eldoria'] === 'Character' && sources['Eldoria Extras'] === 'Character' && sources['Global Lore'] === 'Global' && sources['Chat Lore'] === 'Chat' && sources['Persona Lore'] === 'Persona');
   await page.screenshot({ path: `${SHOTS}/03-modal-initial.png` });
+
+  // ---- size: wide modal, sidebar wide enough that long book names are not shredded ----
+  const dims = await page.evaluate(() => {
+    const r = s => document.querySelector(s).getBoundingClientRect();
+    const long = [...document.querySelectorAll('.lorerev_book_name')].find(e => e.textContent.startsWith('Intimate'));
+    return { vw: innerWidth, vh: innerHeight, popup: r('dialog[open].lorerev_popup'), sidebar: r('.lorerev_sidebar'), main: r('.lorerev_main'), longName: long.getBoundingClientRect(), lineH: parseFloat(getComputedStyle(long).lineHeight) || 20 };
+  });
+  console.log('dims', JSON.stringify({ popupW: dims.popup.width, popupH: dims.popup.height, sidebarW: dims.sidebar.width, mainW: dims.main.width, longNameH: dims.longName.height }));
+  check('popup width >= 90% of viewport', dims.popup.width >= dims.vw * 0.9, `${dims.popup.width}/${dims.vw}`);
+  check('popup height >= 85% of viewport', dims.popup.height >= dims.vh * 0.85, `${dims.popup.height}/${dims.vh}`);
+  check('sidebar width 300-380px', dims.sidebar.width >= 299 && dims.sidebar.width <= 381, String(dims.sidebar.width));
+  check('main panel gets the rest (> 2x sidebar)', dims.main.width > dims.sidebar.width * 2);
+  check('long book name wraps at words only (<= 3 lines)', dims.longName.height <= dims.lineH * 3 + 4, String(dims.longName.height));
 
   // expand / collapse
   const eld = page.locator('.lorerev_book[data-book="Eldoria"]');
@@ -101,18 +114,53 @@ try {
   const info1 = await page.textContent('#lorerev_depth_info');
   check('depth 3 -> 3 of 8', info1 === '3 of 8 messages will be sent', info1);
 
-  // send echo
+  // ---- send validation ----
+  const nMsgs = () => page.locator('.lorerev_msg').count();
+  const errText = () => page.locator('.lorerev_msg.lorerev_error').last().textContent();
+  const userMsgs = () => page.locator('.lorerev_msg.lorerev_user').count();
+  // currently: profile B chosen and 5 entries selected; clear both to test errors
+  await page.selectOption('#lorerev_profile', '');
   await page.fill('#lorerev_input', 'Update the queen\'s age.');
   await page.click('#lorerev_send');
-  const msgs = await page.$$eval('.lorerev_msg', els => els.map(e => e.textContent));
+  check('no profile: inline error shown', (await errText()) === 'Select a connection profile first.', await errText());
+  check('no profile: toast error shown', (await page.locator('.toast-error').count()) > 0);
+  check('no profile: nothing echoed', (await userMsgs()) === 0);
+  check('no profile: typed text kept', (await page.inputValue('#lorerev_input')) === "Update the queen's age.");
+  await page.screenshot({ path: `${SHOTS}/11-error-no-profile.png` });
+  await page.selectOption('#lorerev_profile', 'prof-b');
+
+  // no entries selected
+  for (const b of ['Eldoria', 'Chat Lore']) await page.locator(`.lorerev_book[data-book="${b}"] .lorerev_book_check`).evaluate(e => { e.checked = true; e.click(); });
+  check('cleared selection', (await page.textContent('#lorerev_selected_info')) === 'No entries selected', await page.textContent('#lorerev_selected_info'));
+  await page.click('#lorerev_send');
+  check('no entries: inline error', /Select at least one lorebook entry/.test(await errText()));
+  check('no entries: nothing echoed', (await userMsgs()) === 0);
+  await page.screenshot({ path: `${SHOTS}/12-error-no-entries.png` });
+  // restore selection: 4 of Eldoria + 1 + Chat Lore all = same as before (5 entries in 2 books)
+  await eld.locator('.lorerev_book_check').check();
+  await eld.locator('.lorerev_entry_check').nth(1).uncheck();
+  await cl.locator('.lorerev_book_check').check();
+  check('selection restored', (await page.textContent('#lorerev_selected_info')) === '5 entries selected in 2 book(s)', await page.textContent('#lorerev_selected_info'));
+
+  // empty instruction
+  await page.fill('#lorerev_input', '   ');
+  await page.click('#lorerev_send');
+  check('empty instruction: inline error', /Write instructions first/.test(await errText()));
+  check('empty instruction: nothing echoed', (await userMsgs()) === 0);
+  check('only one error message kept (replaced, not stacked)', (await page.locator('.lorerev_msg.lorerev_error').count()) === 1);
+
+  // valid send
+  await page.fill('#lorerev_input', 'Update the queen\'s age.');
+  await page.click('#lorerev_send');
+  const msgs = await page.$$eval('.lorerev_msg:not(.lorerev_error)', els => els.map(e => e.textContent));
   console.log('msgs:', msgs);
-  check('send echoes user message and not-implemented reply', msgs[0] === "Update the queen's age." && /isn't implemented yet/.test(msgs[1]) && /5 selected entries, 3 of 8 chat messages/.test(msgs[1]));
+  check('valid send echoes user message and not-implemented reply', msgs[0] === "Update the queen's age." && /isn't implemented yet/.test(msgs[1]) && /5 selected entries, 3 of 8 chat messages/.test(msgs[1]) && /Profile B \(KoboldCpp\)/.test(msgs[1]), msgs[1]);
   await page.screenshot({ path: `${SHOTS}/08-send-echo.png` });
 
   // Enter key sends
   await page.fill('#lorerev_input', 'second');
   await page.press('#lorerev_input', 'Enter');
-  check('Enter sends', (await page.locator('.lorerev_msg').count()) === 4);
+  check('Enter sends', (await userMsgs()) === 2);
 
   // close
   await page.click('dialog[open] .popup-button-ok');
@@ -127,7 +175,7 @@ try {
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
   check('reopen: depth restored', (await page.inputValue('#lorerev_depth')) === '3');
-  check('reopen: conversation kept', (await page.locator('.lorerev_msg').count()) === 4);
+  check('reopen: conversation kept', (await page.locator('.lorerev_msg.lorerev_user').count()) === 2);
   await page.click('dialog[open] .popup-button-ok');
   await page.waitForTimeout(800);
 

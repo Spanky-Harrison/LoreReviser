@@ -29,6 +29,11 @@ await post('/api/worldinfo/edit', { name: 'Chat Lore', data: book(
   entry(1, 'Secret Passage', ['passage'], 'Behind the throne.')) });
 await post('/api/worldinfo/edit', { name: 'Persona Lore', data: book(
   entry(0, 'Traveler Backstory', ['traveler'], 'You come from the south.')) });
+await post('/api/worldinfo/edit', { name: 'The Wishing Game - Frankie', data: book(
+  entry(0, 'Frankie', ['Frankie'], 'Runs the wishing game.'),
+  entry(1, 'The Wishing Well', ['well'], 'Grants one wish per night.')) });
+await post('/api/worldinfo/edit', { name: 'Intimate Encounters - Complete Compendium', data: book(
+  entry(0, 'Compendium Index', ['index'], 'Table of contents.')) });
 await post('/api/worldinfo/edit', { name: 'Unlinked Book', data: book(
   entry(0, 'Should not appear', ['x'], 'nope')) });
 

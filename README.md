@@ -15,7 +15,7 @@ Requires SillyTavern **1.19.0 or newer** (the Connection Manager extension must 
 - **Profile:** a Connection Manager profile used only by LoreReviser (independent of your main connection).
 - **System prompt:** editable, with a reset button. Saved in extension settings.
 - **Depth:** send only the last X chat messages (0 = whole chat; hidden messages are not counted).
-- **Chat window:** type instructions and press Enter (Shift+Enter for a new line).
+- **Chat window:** type instructions and press Enter (Shift+Enter for a new line). Sending needs a profile, at least one selected entry, and non-empty instructions; otherwise a red error is shown and nothing is sent.
 
 ## Install on Windows (PowerShell)
 

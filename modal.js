@@ -88,6 +88,7 @@ export async function openModal() {
         return;
     }
 
+    conversation = conversation.filter(m => m.role !== 'error'); // errors don't survive closing the modal
     const { settings, save } = getSettings();
     const $root = $(TEMPLATE);
     const selection = loadSelection();
@@ -204,18 +205,42 @@ export async function openModal() {
         $chat.scrollTop($chat[0].scrollHeight);
     }
 
+    /** Shows an error as a toast and as a red message in the chat window (replacing a previous error). */
+    function showError(text) {
+        toastr.error(text, 'LoreReviser');
+        if (conversation.at(-1)?.role === 'error') conversation.pop();
+        conversation.push({ role: 'error', text });
+        renderChat();
+    }
+
+    /** The chosen Connection Manager profile, or null. The placeholder option (empty value) counts as none. */
+    function getChosenProfile() {
+        const id = String($profile.val() ?? '');
+        if (!id) return null;
+        try {
+            return SillyTavern.getContext().ConnectionManagerRequestService.getSupportedProfiles().find(p => p.id === id) ?? null;
+        } catch { return null; }
+    }
+
     function send() {
         const $input = $root.find('#lorerev_input');
         const text = String($input.val()).trim();
-        if (!text) return;
-        $input.val('');
+        const profile = getChosenProfile();
         const picked = [...selection.values()].reduce((n, s) => n + s.size, 0);
+
+        // Validate first. On any error nothing is echoed and the typed text stays in the box.
+        if (!profile) return showError('Select a connection profile first.');
+        if (!picked) return showError('Select at least one lorebook entry in the sidebar first.');
+        if (!text) return showError('Write instructions first: what should be updated in the selected lore?');
+
+        $input.val('');
+        conversation = conversation.filter(m => m.role !== 'error'); // drop stale errors
         const { used, total } = messageCounts(settings.depth);
         conversation.push({ role: 'user', text });
         conversation.push({
             role: 'assistant',
             text: `Revision isn't implemented yet (coming in a later milestone). Nothing was sent to a model.\n`
-                + `Would use: ${picked} selected entries, ${used} of ${total} chat messages, profile "${$profile.find('option:selected').text()}".`,
+                + `Would use: ${picked} selected entries, ${used} of ${total} chat messages, profile "${profile.name}".`,
         });
         renderChat();
     }
@@ -242,5 +267,8 @@ export async function openModal() {
             renderBooks();
         },
     });
+    // ST's 'large' option sets height and max-width but leaves the popup at its default 500px width,
+    // so add our own class (see style.css) that makes it wide.
+    popup.dlg.classList.add('lorerev_popup');
     await popup.show();
 }

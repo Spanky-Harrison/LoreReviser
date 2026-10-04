@@ -41,5 +41,12 @@ try {
   await page.waitForSelector('.lorerev_book');
   await page.locator('.lorerev_book[data-book="Chat Lore"] .lorerev_toggle').click();
   check('edited entry title visible on reopen', (await page.locator('.lorerev_book[data-book="Chat Lore"] .lorerev_entry span').allTextContents()).includes('Renamed Heir'));
+  // 4) small screen: layout stacks, nothing overflows
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.waitForTimeout(500);
+  const small = await page.evaluate(() => { const r = s => document.querySelector(s).getBoundingClientRect(); return { popup: r('dialog[open].lorerev_popup'), sidebar: r('.lorerev_sidebar'), main: r('.lorerev_main'), vw: innerWidth }; });
+  check('small screen: popup fits viewport', small.popup.width <= small.vw && small.popup.left >= 0, JSON.stringify(small.popup.width));
+  check('small screen: sidebar stacks above main', small.sidebar.width > small.popup.width * 0.8 && small.main.top >= small.sidebar.bottom - 1);
+  await page.screenshot({ path: `${SHOTS}/13-small-screen.png` });
 } catch (e) { console.log('TEST ERROR', e); failures++; } finally { await browser.close(); }
 console.log(failures ? 'FAILURES' : 'ALL PASSED');
