@@ -1,0 +1,12 @@
+{
+    "display_name": "LoreReviser",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Spanky-Harrison",
+    "version": "0.2.0",
+    "homePage": "https://github.com/Spanky-Harrison/LoreReviser",
+    "minimum_client_version": "1.19.0"
+}
