@@ -1,0 +1,44 @@
+/* LoreReviser modal */
+/* ST's .popup is 500px wide and 'large' only raises max-width, so set the width ourselves. */
+.popup.lorerev_popup {
+    width: min(95vw, 1800px) !important;
+    max-width: 95vw !important;
+    height: 92vh !important;
+    height: 92dvh !important;
+}
+.lorerev_popup .popup-content { display: flex; flex-direction: column; min-height: 0; }
+.lorerev_root { display: flex; flex-direction: column; flex: 1; min-height: 0; text-align: left; }
+.lorerev_header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
+.lorerev_header h3 { margin: 0; }
+.lorerev_header label { display: flex; align-items: center; gap: 6px; }
+.lorerev_header input[type="number"] { width: 70px; }
+.lorerev_dim { opacity: 0.6; font-size: 0.9em; }
+.lorerev_body { display: flex; flex: 1; min-height: 0; gap: 10px; padding-top: 8px; }
+
+/* sidebar */
+.lorerev_sidebar { flex: 0 0 clamp(300px, 28%, 380px); overflow-y: auto; border-right: 1px solid var(--SmartThemeBorderColor); padding-right: 8px; }
+.lorerev_sidebar_title { font-weight: bold; margin-bottom: 6px; }
+.lorerev_book { margin-bottom: 8px; }
+.lorerev_book_row { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.lorerev_book_name { flex: 1; font-weight: bold; overflow-wrap: break-word; min-width: 0; }
+.lorerev_toggle { width: 14px; }
+.lorerev_book_sources { margin-left: 20px; }
+.lorerev_entries { margin-left: 20px; }
+.lorerev_entry { display: flex; align-items: center; gap: 6px; padding: 1px 0; cursor: pointer; }
+.lorerev_entry.lorerev_disabled span { opacity: 0.5; text-decoration: line-through; }
+
+/* main column */
+.lorerev_main { flex: 1; display: flex; flex-direction: column; min-width: 0; gap: 6px; }
+.lorerev_system textarea { width: 100%; box-sizing: border-box; margin: 6px 0; }
+.lorerev_chat { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 8px; }
+.lorerev_msg { white-space: pre-wrap; margin-bottom: 8px; padding: 6px 10px; border-radius: 8px; max-width: 85%; }
+.lorerev_msg.lorerev_user { margin-left: auto; background: var(--SmartThemeUserMesBlurTintColor); }
+.lorerev_msg.lorerev_error { background: rgba(160, 30, 30, 0.45); border: 1px solid #c33; }
+.lorerev_msg.lorerev_assistant { background: var(--SmartThemeBotMesBlurTintColor); }
+.lorerev_input { display: flex; gap: 8px; align-items: stretch; }
+.lorerev_input textarea { flex: 1; resize: none; }
+
+@media (max-width: 800px) {
+    .lorerev_body { flex-direction: column; }
+    .lorerev_sidebar { flex: 0 0 35%; max-width: none; padding-right: 0; border-right: none; border-bottom: 1px solid var(--SmartThemeBorderColor); }
+}
