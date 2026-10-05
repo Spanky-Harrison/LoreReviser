@@ -105,6 +105,7 @@ try {
   check('A: request: model + max_tokens', r1.model === 'fake-model' && r1.max_tokens >= 1500, JSON.stringify([r1.model, r1.max_tokens]));
   check('A: request: system prompt = editable prompt + fixed format rules', r1.messages[0].role === 'system' && /careful lorebook editor/.test(r1.messages[0].content) && /Reply format \(strict\)/.test(r1.messages[0].content));
   check('A: system message: default intensity Balanced + formatting-preservation rules', /## Rewrite intensity: Balanced\nBALANCED\./.test(r1.messages[0].content) && /Maintain ALL current formatting/.test(r1.messages[0].content) && r1.messages[0].content.indexOf('Rewrite intensity') < r1.messages[0].content.indexOf('Reply format (strict)'));
+  check('A: system message forbids renaming/misspelling existing headings (system prompt, intensity, change type, rules)', ['Keep every existing heading and field label exactly', 'The liberty is for sentences, not for headings', "Record the change under the entry's existing headings", 'Copy every existing heading and field label exactly'].every(x => r1.messages[0].content.includes(x)));
   check('A: request: character card', /<character_card>\nCharacter: Test Queen/.test(u1) && /Description:\nA queen\./.test(u1));
   check('A: request: active lore (constant entry)', /<active_lore>[\s\S]*Silver crowns\.[\s\S]*<\/active_lore>/.test(u1));
   check('A: request: depth 3 -> last 3 messages only', /messages="3 of 8"/.test(u1) && u1.includes('Message number 8') && u1.includes('Message number 6') && !u1.includes('Message number 5'));
@@ -127,7 +128,7 @@ try {
   check('B: undo put the old version back (lorebooks as before)', (await snapshot()) === before);
 
   // ================= C. inline edit =================
-  await card('Queen Maren').locator('.menu_button', { hasText: /^Edit$/ }).click();
+  await card('Queen Maren').locator('.menu_button', { hasText: /^Edit full entry$/ }).click();
   await card('Queen Maren').locator('.lorerev_edit input').first().fill('Maren, queen, wise');
   await card('Queen Maren').locator('.lorerev_edit textarea').fill('Edited by the user, 55 years old.');
   await page.screenshot({ path: `${SHOTS}/16-edit.png` });
@@ -366,9 +367,41 @@ try {
   await shot('27-block-compare-narrow.png');
   await page.setViewportSize({ width: 1400, height: 900 });
 
+  // ================= O2. "Edit proposal" edits only the changed (green) parts; everything else stays exactly =================
+  await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
+  const proposedText = await tcard.locator('.lorerev_text').textContent();
+  check('O2: revision card: "Edit proposal" is the main Edit, "Edit full entry" next to it', (await tcard.locator('.lorerev_buttons .menu_button').allTextContents()).join('|') === 'Approve|Reject|Edit proposal|Edit full entry|History');
+  await tcard.locator('.lorerev_btn_edit').click();
+  const hunks = tcard.locator('.lorerev_ed_hunk');
+  check('O2: one box per changed part, no whole-text box', (await hunks.count()) === 2 && (await tcard.locator('.lorerev_ed_content').count()) === 0, String(await hunks.count()));
+  check('O2: the boxes hold the proposed (green) text', (await hunks.nth(0).inputValue()) === 'Your father mended nets and your mother ran a stall of smoked eel at the harbor market.' && (await hunks.nth(1).inputValue()) === "Since the queen's coronation you have been mapping the Silverwood border in secret, and you no longer trust anyone at court. You still carry your father's brass compass everywhere.", await hunks.nth(0).inputValue());
+  check('O2: removed old text shown above its box, unchanged text dimmed', (await tcard.locator('.lorerev_hunk .lorerev_blk_del').first().textContent()).includes('mother sold smoked eel') && (await tcard.locator('.lorerev_hunk_same').count()) >= 2);
+  check('O2: the first changed part has the focus', await hunks.nth(0).evaluate(el => document.activeElement === el));
+  check('O2: keys are editable here too', (await tcard.locator('.lorerev_ed_keys').inputValue()) === 'traveler, Saltmere, cartographer');
+  await tcard.scrollIntoViewIfNeeded();
+  await shot('30-edit-proposal.png');
+  await hunks.nth(0).fill('Your father mended nets and your mother ran a stall of smoked eel and pickled herring at the harbor market.');
+  await tcard.locator('.lorerev_btn_hunk_old').nth(1).click();
+  check('O2: "Use old text" puts the removed text into the box', (await hunks.nth(1).inputValue()) === "You distrust nobles and carry your father's brass compass everywhere.");
+  await tcard.locator('.lorerev_ed_keys').fill('traveler, Saltmere, mapmaker');
+  await tcard.locator('.lorerev_btn_save').click();
+  await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
+  const expectedText = proposedText.replace('smoked eel at', 'smoked eel and pickled herring at').replace(/Since the queen's coronation[\s\S]*$/, "You distrust nobles and carry your father's brass compass everywhere.");
+  check('O2: saved text = proposal with only the edited parts replaced (rest byte for byte, newline kept)', (await tcard.locator('.lorerev_text').textContent()) === expectedText, JSON.stringify(await tcard.locator('.lorerev_text').textContent()));
+  check('O2: keys saved, card marked "Edited by you"', (await tcard.locator('.lorerev_chip_ins').allTextContents()).join('|') === 'Saltmere|mapmaker' && /Edited by you/.test(await tcard.locator('.lorerev_card_title').textContent()));
+  // switching to the full editor keeps what was typed
+  await tcard.locator('.lorerev_btn_edit').click();
+  await tcard.locator('.lorerev_ed_hunk').first().fill('Your father mended nets.');
+  await tcard.locator('.lorerev_edit .lorerev_btn_edit_full').click();
+  check('O2: "Edit full entry" from the proposal editor carries the typed text over', (await tcard.locator('.lorerev_ed_content').inputValue()).includes('Your father mended nets. You learned') && (await tcard.locator('.lorerev_ed_hunk').count()) === 0);
+  await tcard.locator('.lorerev_edit .menu_button', { hasText: 'Cancel' }).click();
+  await tcard.locator('.lorerev_btn_edit').click();
+  await tcard.locator('.lorerev_btn_reset').click();
+  check("O2: reset restores the model's version", (await tcard.locator('.lorerev_text').textContent()) === proposedText && !/Edited by you/.test(await tcard.locator('.lorerev_card_title').textContent()));
+
   // ================= P. editing works in every state; committed text = edit box =================
   const EDIT = 'Exactly my text.\n\n  Two  spaces and a {{user}} macro stay as typed.  ';
-  const editBtn = (t) => card(t).locator('.menu_button', { hasText: /^Edit$/ });
+  const editBtn = (t) => card(t).locator('.menu_button', { hasText: /^(Edit|Edit full entry)$/ }); // full editor ("Edit" on "No changes" cards)
   const edit = async (t, text, keys) => {
     await editBtn(t).click();
     if (keys !== undefined) await card(t).locator('.lorerev_ed_keys').fill(keys);

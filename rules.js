@@ -12,7 +12,8 @@ Rules:
 - "content": the complete new text of the entry (not a diff). Leave this field out if the content stays the same.
 - "keys" and "secondary_keys": the complete new list of trigger keys. Leave a field out if that list stays the same.
 - "note": one short sentence saying what you changed and why.
-- Maintain ALL current formatting of each entry unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles ([Name: ...], <tag>), field layouts ("Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines at the start of the content, and /regex/ keys. Text you add must use the same layout as the text around it. If the content has several lines or paragraphs, keep the same line structure (use \n in the JSON string).
+- Maintain ALL current formatting of each entry unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles ([Name: ...], <tag>), field layouts ("Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines at the start of the content, and /regex/ keys. Text you add must use the same layout as the text around it. If the content has several lines or paragraphs, keep the same line structure (use \\n in the JSON string).
+- Copy every existing heading and field label exactly, character for character (such as "HEIGHT:", "Hair:", "[Appearance]", "## Background"): same spelling, casing, punctuation and symbols. Never rename, misspell, re-case or invent a variant of one (HEIGHT -> HIGHT or HAIR -> HAIIR is an error). Change a heading only if the user explicitly asks you to rename it.
 - The reply must be valid JSON: escape double quotes inside strings as \\" and line breaks as \\n.`;
 
 /** The essentials LoreReviser's parser relies on. */
