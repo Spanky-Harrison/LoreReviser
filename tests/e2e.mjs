@@ -113,6 +113,10 @@ try {
   await page.fill('.lorerev_int_text[data-level="light"]', 'MY LIGHT WORDING');
   check('prompt parts: only the edited level is stored', JSON.stringify(await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.intensityTexts)) === '{"light":"MY LIGHT WORDING"}');
   check('prompt parts: edited marker shown', /edited/.test(await page.textContent('[data-edited="light"]')) && (await page.textContent('[data-edited="heavy"]')) === '');
+  await page.selectOption('#lorerev_changetype', 'retcon');
+  await page.click('#lorerev_ct_box summary');
+  await page.fill('.lorerev_ct_text[data-type="development"]', 'MY DEV WORDING');
+  await page.click('#lorerev_ct_box summary');
   await page.click('#lorerev_rules_box summary');
   check('prompt parts: default rules show no warning', !(await page.isVisible('#lorerev_rules_warn')));
   await page.fill('#lorerev_rules', 'MY RULES: reply with a poem.');
@@ -208,6 +212,7 @@ try {
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
   check('reopen: edited prompt parts restored', (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'MY LIGHT WORDING' && (await page.inputValue('.lorerev_int_text[data-level="heavy"]')).startsWith('HEAVY-HANDED.') && (await page.inputValue('#lorerev_rules')).startsWith('MY RULES'));
+  check('reopen: change type + edited wording restored', (await page.inputValue('#lorerev_changetype')) === 'retcon' && (await page.inputValue('.lorerev_ct_text[data-type="development"]')) === 'MY DEV WORDING' && (await page.inputValue('.lorerev_ct_text[data-type="retcon"]')).startsWith('RETCON.'));
   check('reopen: intensity restored', (await page.inputValue('#lorerev_intensity')) === 'light');
   check('reopen: depth -1 restored with its label', (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
   await page.click('dialog[open] .popup-button-ok');
@@ -224,6 +229,7 @@ try {
   console.log('after reload settings:', persisted);
   const p = JSON.parse(persisted);
   check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === -1 && p.intensity === 'light');
+  check('change type + edited wording persisted across reload', p.changeType === 'retcon' && p.changeTypeTexts?.development === 'MY DEV WORDING' && Object.keys(p.changeTypeTexts).length === 1);
   check('edited intensity wording + format rules persisted across reload', p.intensityTexts?.light === 'MY LIGHT WORDING' && Object.keys(p.intensityTexts).length === 1 && p.formatRules.startsWith('MY RULES'));
 } catch (e) {
   console.log('TEST ERROR', e);

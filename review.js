@@ -7,6 +7,7 @@ import { integrityWarnings, sameAsOriginal } from './parse.js';
 import { blockDiff, listDiff } from './diff.js';
 import { applyApproval } from './apply.js';
 import { INTENSITIES } from './intensity.js';
+import { CHANGE_TYPES } from './changetype.js';
 import { regenerateItem, retryMissing, describeEnd, describeError, runState } from './revision.js';
 
 const $el = (tag, cls, text) => { const e = $(`<${tag}>`); if (cls) e.addClass(cls); if (text !== undefined) e.text(text); return e; };
@@ -189,9 +190,10 @@ export function renderSession(session, hooks = {}) {
         if (item.status === 'approved') $card.append($el('div', 'lorerev_ok_line', item.applyMessage ?? 'Approved.'));
         if (item.reapprove) $card.append($el('div', 'lorerev_warn', 'You edited this after approving it. Approve it again to confirm your edited version.'));
         if (attempt.note) $card.append($el('div', 'lorerev_note', attempt.note));
-        if (attempt.request || attempt.intensity) {
+        if (attempt.request || attempt.intensity || attempt.changeType) {
             $card.append($el('div', 'lorerev_dim lorerev_attempt_info').append(
                 attempt.intensity ? $el('span', '', `Rewrite intensity: ${INTENSITIES[attempt.intensity]?.label ?? attempt.intensity}. `) : '',
+                attempt.changeType ? $el('span', '', `Change type: ${CHANGE_TYPES[attempt.changeType]?.label ?? attempt.changeType}. `) : '',
                 attempt.request ? $el('span', 'lorerev_request', `Your request for this attempt: “${attempt.request}”`) : ''));
         }
         for (const w of integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));

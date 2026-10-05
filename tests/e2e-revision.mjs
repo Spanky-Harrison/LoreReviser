@@ -635,6 +635,51 @@ try {
   await page.click('#lorerev_rules_box summary');
   await page.fill('#lorerev_input', '');
 
+  // ================= Y. change type: Development (default) / Retcon, editable wording, applies on Send and Regenerate =================
+  check('Y: default change type is Development', (await page.inputValue('#lorerev_changetype')) === 'development');
+  const nSess = await page.locator('.lorerev_session').count();
+  const REPLY_Y = [{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }];
+  await fake.reset(); await fake.queue(REPLY_Y);
+  await send('Y: development send.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 1, nSess);
+  const yDev = await sysOf();
+  check('Y: Development section sits after the intensity section and before the reply format', /## Rewrite intensity: [^\n]+\n[\s\S]+\n\n## Change type: Development\nDEVELOPMENT\. [\s\S]*progression in the story[\s\S]*\n\n## Reply format \(strict\)/.test(yDev) && !/RETCON\./.test(yDev));
+  check('Y: system prompt refers to the "Change type" section', /Follow the "Change type" section/.test(yDev));
+  check('Y: attempt shows the change type', /Change type: Development/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
+  await page.selectOption('#lorerev_changetype', 'retcon');
+  await fake.reset(); await fake.queue(REPLY_Y);
+  await send('Y: retcon send.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 2, nSess);
+  const yRet = await sysOf();
+  check('Y: Retcon wording replaces Development, forbids acknowledging the change', /## Change type: Retcon\nRETCON\. /.test(yRet) && /always true/.test(yRet) && /"no longer"/.test(yRet) && /"recently"/.test(yRet) && /"became"/.test(yRet) && !/DEVELOPMENT\./.test(yRet));
+  check('Y: attempt shows Retcon', /Change type: Retcon/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
+  // regenerate uses the CURRENT type
+  await page.selectOption('#lorerev_changetype', 'development');
+  await fake.reset(); await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Gold marks."}]' }]);
+  await card('Currency').locator('.lorerev_btn_regen').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
+  check('Y: regenerate uses the current change type', /## Change type: Development\nDEVELOPMENT\./.test(await sysOf()) && /Change type: Development/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
+  await card('Currency').locator('.lorerev_pg', { hasText: '‹' }).click();
+  check('Y: attempt 1 keeps the type it was made with', /Change type: Retcon/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
+  // editable wording + Restore default
+  await page.selectOption('#lorerev_changetype', 'retcon');
+  await page.click('#lorerev_ct_box summary');
+  await page.fill('.lorerev_ct_text[data-type="retcon"]', 'RETCON (mine): write it as always true.');
+  check('Y: only the edited type is stored', JSON.stringify(await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.changeTypeTexts)) === '{"retcon":"RETCON (mine): write it as always true."}' && (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.changeType)) === 'retcon');
+  await page.evaluate(() => document.querySelector('#lorerev_ct_box').scrollIntoView({ block: 'start' }));
+  await shot('42-change-type.png');
+  await fake.reset(); await fake.queue(REPLY_Y);
+  await send('Y: edited retcon wording.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 3, nSess);
+  const yEd = await sysOf();
+  check('Y: edited wording used under the fixed heading', yEd.includes('## Change type: Retcon\nRETCON (mine): write it as always true.') && !/RETCON\. The change/.test(yEd));
+  await page.click('[data-restore-ct="retcon"]');
+  check('Y: Restore default brings the original wording back and clears the override', (await page.inputValue('.lorerev_ct_text[data-type="retcon"]')).startsWith('RETCON. The change is') && (await page.evaluate(() => JSON.stringify(SillyTavern.getContext().extensionSettings.LoreReviser.changeTypeTexts))) === '{}');
+  const hdr = await page.$$eval('.lorerev_header > *', els => els.map(e => e.getBoundingClientRect()).filter(r => r.width).map(r => Math.round(r.right)));
+  check('Y: header controls fit inside the modal', Math.max(...hdr) <= (await page.locator('.lorerev_root').boundingBox()).x + (await page.locator('.lorerev_root').boundingBox()).width + 1);
+  await page.click('#lorerev_ct_box summary');
+  await page.selectOption('#lorerev_changetype', 'development');
+
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
 } catch (e) {
   console.log('TEST ERROR', e); failures++;

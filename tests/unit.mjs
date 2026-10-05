@@ -4,6 +4,7 @@ import { parseRevisionReply as P, integrityWarnings as W, sameAsOriginal } from 
 import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
 import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
 import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection, intensityText } from '../intensity.js';
+import { CHANGE_TYPES, DEFAULT_CHANGE_TYPE, normalizeChangeType, changeTypeText, changeTypeSection } from '../changetype.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
@@ -197,5 +198,25 @@ t('format rules: default is fine, broken edits are flagged', () => {
 t('format rules: blank means the default', () => {
     assert.equal(effectiveFormatRules(''), DEFAULT_FORMAT_RULES); assert.equal(effectiveFormatRules(undefined), DEFAULT_FORMAT_RULES);
     assert.equal(effectiveFormatRules('  \n'), DEFAULT_FORMAT_RULES); assert.equal(effectiveFormatRules('mine json array id content'), 'mine json array id content');
+});
+t('change type: Development (default) and Retcon, junk falls back', () => {
+    assert.deepEqual(Object.keys(CHANGE_TYPES), ['development', 'retcon']); assert.equal(DEFAULT_CHANGE_TYPE, 'development');
+    assert.equal(normalizeChangeType('retcon'), 'retcon'); assert.equal(normalizeChangeType('x'), 'development'); assert.equal(normalizeChangeType(undefined), 'development');
+    assert.equal(normalizeChangeType('__proto__'), 'development'); assert.equal(normalizeChangeType('toString'), 'development');
+});
+t('change type wording: development allows before/after, retcon forbids acknowledging the change', () => {
+    const d = changeTypeSection('development'), r = changeTypeSection('retcon');
+    assert.match(d, /^## Change type: Development\nDEVELOPMENT\./); assert.match(d, /before and after/); assert.match(d, /history/);
+    assert.match(r, /^## Change type: Retcon\nRETCON\./); assert.match(r, /always true/); assert.match(r, /do not acknowledge the change/i);
+    for (const w of ['new', 'now', 'recently', 'no longer', 'changed', 'became']) assert.ok(r.includes(`"${w}"`), w);
+    assert.equal(changeTypeSection('junk'), d);
+});
+t('change type: edited wording replaces only that type; heading stays fixed; blank = default', () => {
+    assert.equal(changeTypeSection('retcon', { retcon: 'MINE' }), '## Change type: Retcon\nMINE');
+    assert.equal(changeTypeSection('development', { retcon: 'MINE' }), changeTypeSection('development'));
+    assert.equal(changeTypeText('retcon', { retcon: ' ' }), CHANGE_TYPES.retcon.text); assert.equal(changeTypeText('retcon', null), CHANGE_TYPES.retcon.text);
+});
+t('default system prompt refers to the "Change type" section', () => {
+    assert.match(DEFAULT_SYSTEM_PROMPT, /"Change type" section/);
 });
 console.log(`${n} unit tests passed`);

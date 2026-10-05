@@ -9,6 +9,7 @@ import { prepareSession, sendSession, runState, describeError } from './revision
 import { renderSession } from './review.js';
 import { normalizeDepth, depthLabel } from './depth.js';
 import { INTENSITIES, normalizeIntensity } from './intensity.js';
+import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
@@ -61,6 +62,8 @@ const TEMPLATE = `
         <label>Profile <select id="lorerev_profile" class="text_pole"></select></label>
         <label title="How much the model may rewrite. Light touch: only what must change, everything else verbatim. Balanced: a little liberty, same essence. Heavy-handed: rewrite sections as needed to fit the narrative.">Rewrite
             <select id="lorerev_intensity" class="text_pole">${Object.entries(INTENSITIES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
+        <label title="What kind of change this is. Development: a progression in the story, the lore may describe before/after and what changed. Retcon: the existing reality is corrected and must be written as though it was always true, without acknowledging any change.">Change
+            <select id="lorerev_changetype" class="text_pole">${Object.entries(CHANGE_TYPES).map(([k, v]) => `<option value="${k}" title="${v.title}">${v.label}</option>`).join('')}</select></label>
         <label title="Send only the last X chat messages. 0 = whole chat. -1 = no chat at all.">Depth
             <input id="lorerev_depth" type="number" min="-1" step="1" class="text_pole"></label>
         <span id="lorerev_depth_info" class="lorerev_dim"></span>
@@ -89,6 +92,16 @@ const TEMPLATE = `
                     <div class="lorerev_part_head"><b>${v.label}</b> <span class="lorerev_edited" data-edited="${k}"></span>
                         <div class="menu_button lorerev_restore" data-restore="${k}" title="Put the original ${v.label} wording back">Restore default</div></div>
                     <textarea class="text_pole lorerev_int_text" data-level="${k}" rows="3"></textarea>
+                </div>`).join('')}
+            </details>
+            <details class="lorerev_system" id="lorerev_ct_box">
+                <summary>Change type wording <span class="lorerev_edited" id="lorerev_ct_edited"></span></summary>
+                <div class="lorerev_dim">The text that is added to the system message, after the rewrite intensity, for the change type chosen at the top (Development or Retcon). Each type is edited separately. The heading <code>## Change type: &lt;type&gt;</code> is added automatically and stays fixed, so the system prompt's reference to the "Change type" section remains valid.</div>
+                ${Object.entries(CHANGE_TYPES).map(([k, v]) => `
+                <div class="lorerev_part">
+                    <div class="lorerev_part_head"><b>${v.label}</b> <span class="lorerev_edited" data-ct-edited="${k}"></span>
+                        <div class="menu_button lorerev_restore" data-restore-ct="${k}" title="Put the original ${v.label} wording back">Restore default</div></div>
+                    <textarea class="text_pole lorerev_ct_text" data-type="${k}" rows="4"></textarea>
                 </div>`).join('')}
             </details>
             <details class="lorerev_system" id="lorerev_rules_box">
@@ -132,6 +145,8 @@ export async function openModal() {
     fillProfileSelect($profile, settings.profileId);
     $profile.on('change', () => { settings.profileId = String($profile.val()); save(); });
 
+    const $changeType = $root.find('#lorerev_changetype').val(normalizeChangeType(settings.changeType));
+    $changeType.on('change', () => { settings.changeType = normalizeChangeType($changeType.val()); save(); });
     const $intensity = $root.find('#lorerev_intensity').val(normalizeIntensity(settings.intensity));
     $intensity.on('change', () => { settings.intensity = normalizeIntensity($intensity.val()); save(); });
 
@@ -191,6 +206,33 @@ export async function openModal() {
         $root.find(`.lorerev_int_text[data-level="${k}"]`).val(INTENSITIES[k].text).trigger('input');
     });
     refreshIntMarks();
+
+    // --- change type wording (same behaviour as the intensity wording) ---
+    const refreshCtMarks = () => {
+        let any = false;
+        for (const k of Object.keys(CHANGE_TYPES)) {
+            const on = k in settings.changeTypeTexts;
+            any ||= on;
+            markEdited($root.find(`[data-ct-edited="${k}"]`), on);
+        }
+        markEdited($root.find('#lorerev_ct_edited'), any);
+    };
+    $root.find('.lorerev_ct_text').each(function () {
+        const $t = $(this), k = String($t.data('type'));
+        const defaults = CHANGE_TYPES[k].text;
+        $t.val(settings.changeTypeTexts[k] ?? defaults);
+        $t.on('input', () => {
+            const v = String($t.val());
+            if (!v.trim() || v.trim() === defaults.trim()) delete settings.changeTypeTexts[k]; else settings.changeTypeTexts[k] = v;
+            refreshCtMarks(); save();
+        });
+        $t.on('change', () => { if (!String($t.val()).trim()) $t.val(defaults); });
+    });
+    $root.find('[data-restore-ct]').on('click', function () {
+        const k = String($(this).data('restore-ct'));
+        $root.find(`.lorerev_ct_text[data-type="${k}"]`).val(CHANGE_TYPES[k].text).trigger('input');
+    });
+    refreshCtMarks();
 
     // --- reply format rules, with a warning when they would break the parser ---
     const $rules = $root.find('#lorerev_rules').val(settings.formatRules || DEFAULT_FORMAT_RULES);

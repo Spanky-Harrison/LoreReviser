@@ -45,6 +45,9 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 ## Editable system-message parts (done)
 Rewrite-intensity wordings (per level) and the reply-format rules are editable in the modal, stored only when edited (`settings.intensityTexts`, `settings.formatRules`), with Restore default buttons and a parse-safety warning. Modal buttons no longer wrap (`.lorerev_root .menu_button { white-space: nowrap; width: auto }`).
 
+## Change type (done)
+Development / Retcon toggle (default Development), editable wording per type, persisted, applied on Send and Regenerate and shown on each attempt. Not enforced by code: Retcon is an instruction to the model only.
+
 ## Open questions
 - None currently.
 

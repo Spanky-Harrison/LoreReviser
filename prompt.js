@@ -1,7 +1,7 @@
 // Builds the revision prompt ourselves (we do not capture a real "send"): see docs/milestone1-findings.md, section 3.
 //
 // The request is two chat messages:
-//   system: the user's system prompt + the rewrite-intensity section + the reply-format rules (rules.js), all editable in the modal
+//   system: the user's system prompt + the rewrite-intensity section + the change-type section + the reply-format rules (rules.js), all editable in the modal
 //   user:   <character_card> <active_lore> <chat_history> <entries_to_revise> <instructions>
 // Regeneration adds <previous_attempts> and <regeneration_request> and lists only the entry being redone.
 
@@ -11,6 +11,7 @@ import * as regexEngine from '../../regex/engine.js';
 import { normalizeDepth, sliceByDepth } from './depth.js';
 import { dedupeLore, assembleLore } from './dedupe.js';
 import { intensitySection } from './intensity.js';
+import { changeTypeSection } from './changetype.js';
 import { effectiveFormatRules } from './rules.js';
 
 
@@ -182,12 +183,14 @@ const attemptJson = (a) => JSON.stringify({ keys: a.keys, secondary_keys: a.seco
  * @param {object[]} p.items entries to revise
  * @param {string} p.instruction the user's instructions
  * @param {string} [p.intensity] 'light' | 'balanced' | 'heavy' (see intensity.js)
+ * @param {string} [p.changeType] 'development' | 'retcon' (see changetype.js)
+ * @param {Record<string,string>} [p.changeTypeTexts] the user's edited wordings per change type (missing = default)
  * @param {Record<string,string>} [p.intensityTexts] the user's edited wordings per level (missing = default)
  * @param {string} [p.formatRules] the user's edited reply-format rules ('' = default)
  * @param {object[]} [p.attempts] regeneration only: earlier attempts of the single entry
  * @param {string} [p.regenNote] regeneration only: extra guidance
  */
-export function buildMessages({ systemPrompt, context, items, instruction, intensity, intensityTexts = {}, formatRules = '', attempts = null, regenNote = '' }) {
+export function buildMessages({ systemPrompt, context, items, instruction, intensity, intensityTexts = {}, changeType, changeTypeTexts = {}, formatRules = '', attempts = null, regenNote = '' }) {
     const sections = [
         `<character_card>\n${context.card}\n</character_card>`,
         `<active_lore>\n${loreFor(context, items).lore || '(none active)'}\n</active_lore>`,
@@ -207,7 +210,7 @@ export function buildMessages({ systemPrompt, context, items, instruction, inten
         sections.push('Reply with the JSON array only.');
     }
     return [
-        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity, intensityTexts)}\n\n${effectiveFormatRules(formatRules)}` },
+        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity, intensityTexts)}\n\n${changeTypeSection(changeType, changeTypeTexts)}\n\n${effectiveFormatRules(formatRules)}` },
         { role: 'user', content: sections.join('\n\n') },
     ];
 }
