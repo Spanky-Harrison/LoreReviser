@@ -42,6 +42,9 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 - **New entries.** The user picks the target lorebook. Proposed entries use the same review format as revisions (approve / edit / regenerate). The user can optionally pick an existing entry to copy its detailed settings from (everything except content, title, and keys); otherwise the defaults are used.
 - **ST version.** Latest release only.
 
+## Editable system-message parts (done)
+Rewrite-intensity wordings (per level) and the reply-format rules are editable in the modal, stored only when edited (`settings.intensityTexts`, `settings.formatRules`), with Restore default buttons and a parse-safety warning. Modal buttons no longer wrap (`.lorerev_root .menu_button { white-space: nowrap; width: auto }`).
+
 ## Open questions
 - None currently.
 

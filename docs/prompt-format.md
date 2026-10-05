@@ -9,7 +9,7 @@ The example below is a real request captured by the test suite (`tests/e2e-revis
 Two chat messages, plus `max_tokens` (the "Reply tokens" setting, or automatic: about 2x the size of the selected entries + 2500, between 4096 and 32000).
 The profile's preset supplies the sampler settings (temperature etc.). For a text-completion profile the two messages are turned into one string with the profile's instruct template (`ConnectionManagerRequestService.constructPrompt`; untested).
 
-1. **system** = the editable system prompt from the modal + a **"Rewrite intensity"** section (Light touch / Balanced / Heavy-handed, chosen in the modal) + the fixed "Reply format" rules (so editing the prompt cannot break parsing). The fixed rules and the default system prompt both tell the model to **maintain all current formatting** of every entry (markdown, line breaks, bracket/tag styles, field layouts, list styles, casing, macros, decorators, regex keys) unless the instructions require otherwise.
+1. **system** = the editable system prompt from the modal + a **"Rewrite intensity"** section (Light touch / Balanced / Heavy-handed, chosen in the modal) + the **"Reply format (strict)"** rules. All three parts are editable in the modal (see "Editing the system message" below); with no edits the text is exactly the defaults documented here. The fixed rules and the default system prompt both tell the model to **maintain all current formatting** of every entry (markdown, line breaks, bracket/tag styles, field layouts, list styles, casing, macros, decorators, regex keys) unless the instructions require otherwise.
 2. **user** = these sections, in this order:
    - `<character_card>`: character and user names, description, personality, scenario, user persona.
    - `<active_lore>`: the lore that a normal send would activate right now (`getWorldInfoPrompt` dry run, scanning the whole visible chat, plus depth/AN/outlet entries). Entries that are selected for revision are **removed from this block** (they are sent once, in full, in `<entries_to_revise>`): the scan result (`checkWorldInfo`) says which entries are active by book + uid, and their exact text is taken out of the before/after text, depth groups, author's-note and outlet lists. If a text can't be located exactly, the entry's stored content is tried as a fallback, and anything that still can't be found is left as is (and logged). Entries that are not selected are never removed, even if their text is identical. A regenerate/retry request only removes the entries it lists. If nothing is left the block reads `(none active)`.
@@ -51,7 +51,18 @@ The user wants a new version of entry E2. Write a different, better version than
 The extra request comes from the always-visible box on the card (multi-line, optional); each attempt remembers the request that produced it and the model sees it again as `user_request` on the next regeneration. The rewrite intensity chosen in the modal *at that moment* applies to the regeneration (each attempt shows the intensity it was made with). The character card, lore and chat history are reused from the original Send (not recomputed), so attempts are comparable.
 For an entry that had "No changes", the request says the first pass found no change and asks for a second look.
 
-## Rewrite intensity wording (added to the system message)
+## Editing the system message
+
+The system message is three pieces, joined by blank lines: `system prompt` + `## Rewrite intensity: <Label>` section + `## Reply format (strict)` rules. In the modal, under "System prompt", there are two more collapsible sections:
+
+- **Rewrite intensity wording:** one text box per level (Light touch / Balanced / Heavy-handed), each with its own **Restore default** button. Only the wording of the chosen level is sent. The heading line `## Rewrite intensity: <Label>` is added by LoreReviser and cannot be edited, so the default system prompt's guideline "Follow the 'Rewrite intensity' section" stays valid whatever you write (if you edit the system prompt itself, keep that reference or drop it).
+- **Reply format rules (advanced):** the rules below, sent last. **Restore default** puts the original back.
+
+Storage (`settings.intensityTexts`, `settings.formatRules`): only real edits are saved (`{ light: "..." }` and a string). An empty box, or text equal to the default, removes the override, so a later improvement of the defaults reaches you. A box left empty is refilled with the default text.
+
+**Safeguard for the reply format.** LoreReviser can only read a reply that is a JSON array of `{id, keys?, secondary_keys?, content?, note?}` objects (see "Reply" below). While you edit the rules, a warning is shown if they no longer mention JSON, an array, `id` or `content`; the same warning is added to the chat when you send (sending is not blocked). The check is a heuristic, it cannot prove your wording works; if the model's answer cannot be read, the chat shows the usual error, and Restore default brings back the working rules.
+
+## Rewrite intensity wording (defaults)
 
 | Level | Text |
 |---|---|

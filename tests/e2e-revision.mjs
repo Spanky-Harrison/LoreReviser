@@ -594,6 +594,47 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 0);
   check('W: clearing with nothing pending needs no confirmation', (await page.locator('dialog[open]').count()) === 1);
 
+  // ================= X. editable system-message parts (intensity wording + reply format rules) =================
+  await page.selectOption('#lorerev_intensity', 'light');
+  await page.click('#lorerev_int_box summary');
+  await page.fill('.lorerev_int_text[data-level="light"]', 'LIGHT (mine): touch only the currency line.');
+  await page.click('#lorerev_rules_box summary');
+  const CUSTOM_RULES = '## Reply format (mine)\nReply with ONE JSON array of {id, keys?, secondary_keys?, content?, note?} objects, nothing else.';
+  await page.fill('#lorerev_rules', CUSTOM_RULES);
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }]);
+  await send('X: change the currency.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 1);
+  const xSys = await sysOf();
+  check('X: edited Light wording is in the system message under the FIXED heading', xSys.includes('## Rewrite intensity: Light touch\nLIGHT (mine): touch only the currency line.') && !/LIGHT TOUCH\. Change only/.test(xSys));
+  check('X: edited rules replace the default rules, and come last', xSys.endsWith(CUSTOM_RULES) && !xSys.includes('## Reply format (strict)'));
+  check('X: system prompt text itself unchanged and still refers to the Rewrite intensity section', /Rewrite intensity/.test(xSys.split('## Rewrite intensity:')[0]));
+  check('X: acceptable rules -> no warning in the chat', (await page.locator('.lorerev_msg.lorerev_warn:has-text("reply format rules")').count()) === 0);
+  await page.click('[data-restore="light"]');
+  await page.click('#lorerev_rules_reset');
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }]);
+  await send('X: again with defaults.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 2);
+  const xDef = await sysOf();
+  check('X: Restore default puts the original wording and rules back in the request', /## Rewrite intensity: Light touch\nLIGHT TOUCH\. Change only what MUST change/.test(xDef) && xDef.includes('## Reply format (strict)') && !xDef.includes('(mine)'));
+  check('X: restored defaults leave no overrides in settings', await page.evaluate(() => { const s = SillyTavern.getContext().extensionSettings.LoreReviser; return JSON.stringify(s.intensityTexts) === '{}' && s.formatRules === ''; }));
+  // rules that would break parsing: loud warning in the UI and in the chat, request still goes out, the (bad) reply is handled
+  await page.fill('#lorerev_rules', 'Reply as a short poem.');
+  check('X: UI warns about rules that break parsing', (await page.isVisible('#lorerev_rules_warn')) && /JSON array of \{id, keys\?, secondary_keys\?, content\?, note\?\}/.test(await page.textContent('#lorerev_rules_warn')));
+  await fake.reset();
+  await fake.queue([{ content: 'Roses are red, violets are blue.' }]);
+  await send('X: with broken rules.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_msg').length > 0 && /may break reading/.test(document.querySelector('#lorerev_chat').textContent));
+  await page.waitForFunction(() => !document.querySelector('.lorerev_loading'), null, { timeout: 15000 }).catch(() => {});
+  check('X: chat warns that edited rules may break reading; request still sent with them', /Reply as a short poem\./.test(await sysOf()) && /Sending anyway/.test(await page.locator('#lorerev_chat').textContent()));
+  await page.click('#lorerev_int_box summary'); await page.click('#lorerev_rules_box summary'); // collapse so the chat is visible
+  await shot('40-rules-warning-chat.png');
+  await page.click('#lorerev_rules_box summary');
+  await page.click('#lorerev_rules_reset');
+  await page.click('#lorerev_rules_box summary');
+  await page.fill('#lorerev_input', '');
+
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
 } catch (e) {
   console.log('TEST ERROR', e); failures++;

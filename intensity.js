@@ -23,8 +23,18 @@ export const DEFAULT_INTENSITY = 'balanced';
 /** Any stored value -> a valid level name. */
 export const normalizeIntensity = (v) => (Object.hasOwn(INTENSITIES, v) ? v : DEFAULT_INTENSITY);
 
-/** The section added to the system message. */
-export function intensitySection(level) {
+/** The wording for a level: the user's edited version (saved overrides) or the default. */
+export function intensityText(level, overrides = {}) {
     const l = normalizeIntensity(level);
-    return `## Rewrite intensity: ${INTENSITIES[l].label}\n${INTENSITIES[l].text}`;
+    const custom = overrides?.[l];
+    return typeof custom === 'string' && custom.trim() ? custom : INTENSITIES[l].text;
+}
+
+/**
+ * The section added to the system message. The heading is fixed ("## Rewrite intensity: <level>") even when the wording is
+ * edited, so the system prompt's reference to the "Rewrite intensity" section always stays valid.
+ */
+export function intensitySection(level, overrides = {}) {
+    const l = normalizeIntensity(level);
+    return `## Rewrite intensity: ${INTENSITIES[l].label}\n${intensityText(l, overrides)}`;
 }

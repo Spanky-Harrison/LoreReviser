@@ -29,7 +29,19 @@
 
 /* main column */
 .lorerev_main { flex: 1; display: flex; flex-direction: column; min-width: 0; gap: 6px; }
+/* ST's .menu_button is width:min-content, which wrapped "Restore default" onto several lines: keep every button on one line */
+.lorerev_root .menu_button { width: auto; min-width: max-content; white-space: nowrap; padding: 3px 12px; flex-shrink: 0; }
 .lorerev_system textarea { width: 100%; box-sizing: border-box; margin: 6px 0; }
+.lorerev_system .lorerev_restore { align-self: flex-start; display: inline-flex; margin: 0 0 4px; }
+.lorerev_system > .lorerev_dim { margin: 4px 0; }
+.lorerev_system code { font-size: 0.9em; }
+.lorerev_edited { opacity: 0.7; font-size: 0.85em; font-weight: normal; }
+.lorerev_part { margin: 6px 0; }
+.lorerev_part_head { display: flex; align-items: center; gap: 8px; }
+.lorerev_part_head .menu_button { margin-left: auto; }
+.lorerev_part textarea { margin: 4px 0; }
+.lorerev_rules_warn { margin: 6px 0; padding: 6px 10px; border: 1px solid var(--warning, #e0a030); border-radius: 6px; background: rgba(224,160,48,0.15); }
+.lorerev_prompts { flex: 0 1 auto; max-height: 38vh; overflow-y: auto; } /* many sections open: scroll here, the chat keeps its space */
 .lorerev_chat { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 8px; }
 .lorerev_msg { white-space: pre-wrap; margin-bottom: 8px; padding: 6px 10px; border-radius: 8px; max-width: 85%; }
 .lorerev_msg.lorerev_user { margin-left: auto; background: var(--SmartThemeUserMesBlurTintColor); }

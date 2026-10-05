@@ -1,7 +1,7 @@
 // Builds the revision prompt ourselves (we do not capture a real "send"): see docs/milestone1-findings.md, section 3.
 //
 // The request is two chat messages:
-//   system: the user's editable system prompt + FORMAT_RULES (fixed, so editing the prompt can't break parsing)
+//   system: the user's system prompt + the rewrite-intensity section + the reply-format rules (rules.js), all editable in the modal
 //   user:   <character_card> <active_lore> <chat_history> <entries_to_revise> <instructions>
 // Regeneration adds <previous_attempts> and <regeneration_request> and lists only the entry being redone.
 
@@ -11,21 +11,8 @@ import * as regexEngine from '../../regex/engine.js';
 import { normalizeDepth, sliceByDepth } from './depth.js';
 import { dedupeLore, assembleLore } from './dedupe.js';
 import { intensitySection } from './intensity.js';
+import { effectiveFormatRules } from './rules.js';
 
-/** Fixed reply-format rules, appended after the user's system prompt. */
-export const FORMAT_RULES = `## Reply format (strict)
-Reply with ONE JSON array and nothing else: no commentary before or after it, no markdown code fences.
-Each element revises one entry from <entries_to_revise>:
-{"id": "E1", "keys": ["..."], "secondary_keys": ["..."], "content": "...", "note": "..."}
-
-Rules:
-- "id" is copied exactly from the entry's id attribute (E1, E2, ...).
-- Include ONLY entries you changed. Leave out every entry that needs no change. If nothing needs changing, reply [].
-- "content": the complete new text of the entry (not a diff). Leave this field out if the content stays the same.
-- "keys" and "secondary_keys": the complete new list of trigger keys. Leave a field out if that list stays the same.
-- "note": one short sentence saying what you changed and why.
-- Maintain ALL current formatting of each entry unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles ([Name: ...], <tag>), field layouts ("Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines at the start of the content, and /regex/ keys. Text you add must use the same layout as the text around it. If the content has several lines or paragraphs, keep the same line structure (use \n in the JSON string).
-- The reply must be valid JSON: escape double quotes inside strings as \\" and line breaks as \\n.`;
 
 /** Short ids for the entries in one request: E1, E2, ... They map back to (book, uid) in the session. */
 export const entryId = (index) => `E${index + 1}`;
@@ -195,10 +182,12 @@ const attemptJson = (a) => JSON.stringify({ keys: a.keys, secondary_keys: a.seco
  * @param {object[]} p.items entries to revise
  * @param {string} p.instruction the user's instructions
  * @param {string} [p.intensity] 'light' | 'balanced' | 'heavy' (see intensity.js)
+ * @param {Record<string,string>} [p.intensityTexts] the user's edited wordings per level (missing = default)
+ * @param {string} [p.formatRules] the user's edited reply-format rules ('' = default)
  * @param {object[]} [p.attempts] regeneration only: earlier attempts of the single entry
  * @param {string} [p.regenNote] regeneration only: extra guidance
  */
-export function buildMessages({ systemPrompt, context, items, instruction, intensity, attempts = null, regenNote = '' }) {
+export function buildMessages({ systemPrompt, context, items, instruction, intensity, intensityTexts = {}, formatRules = '', attempts = null, regenNote = '' }) {
     const sections = [
         `<character_card>\n${context.card}\n</character_card>`,
         `<active_lore>\n${loreFor(context, items).lore || '(none active)'}\n</active_lore>`,
@@ -218,7 +207,7 @@ export function buildMessages({ systemPrompt, context, items, instruction, inten
         sections.push('Reply with the JSON array only.');
     }
     return [
-        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity)}\n\n${FORMAT_RULES}` },
+        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity, intensityTexts)}\n\n${effectiveFormatRules(formatRules)}` },
         { role: 'user', content: sections.join('\n\n') },
     ];
 }

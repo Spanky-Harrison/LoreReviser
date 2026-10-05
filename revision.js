@@ -152,11 +152,11 @@ export async function prepareSession({ profile, settings, selection, instruction
     const maxTokens = await resolveReplyTokens(settings, items);
     const session = {
         id: Date.now(), instruction, profile: { id: profile.id, name: profile.name },
-        systemPrompt: settings.systemPrompt, intensity: normalizeIntensity(settings.intensity), context, items, maxTokens, rawReplies: [],
+        systemPrompt: settings.systemPrompt, intensity: normalizeIntensity(settings.intensity), intensityTexts: { ...settings.intensityTexts }, formatRules: settings.formatRules, context, items, maxTokens, rawReplies: [],
         status: 'ready', error: null, parse: null, createdAt: new Date(),
     };
     for (const it of items) Object.assign(it, { attempts: [], index: -1, status: 'unchanged', error: null });
-    const messages = buildMessages({ systemPrompt: session.systemPrompt, context, items, instruction, intensity: session.intensity });
+    const messages = buildMessages({ systemPrompt: session.systemPrompt, context, items, instruction, intensity: session.intensity, intensityTexts: session.intensityTexts, formatRules: session.formatRules });
     const check = verifyEntriesSent(items, messages);
     const dupes = context.loreRemoved.map(x => x.id);
     console.info(`[LoreReviser] entries requested: ${check.requested.join(',')}; entries in prompt: ${check.sent.join(',')}; already active, sent once (removed from active lore): ${dupes.join(',') || '-'}; still also in active lore: ${check.alsoInLore.join(',') || '-'}`);
@@ -196,7 +196,7 @@ export async function sendSession(session, signal) {
 export async function retryMissing(session, items, signal) {
     if (!items.length) return;
     const profile = ctx().ConnectionManagerRequestService.getProfile(session.profile.id);
-    const messages = buildMessages({ systemPrompt: session.systemPrompt, context: session.context, items, instruction: session.instruction, intensity: session.intensity });
+    const messages = buildMessages({ systemPrompt: session.systemPrompt, context: session.context, items, instruction: session.instruction, intensity: session.intensity, intensityTexts: session.intensityTexts, formatRules: session.formatRules });
     const info = await ask(profile, messages, session.maxTokens, signal);
     const parsed = readReply(session, info);
     if (parsed.error) throw new Error(parsed.error);
@@ -210,9 +210,10 @@ export async function retryMissing(session, items, signal) {
 export async function regenerateItem(session, item, note, signal) {
     const profile = ctx().ConnectionManagerRequestService.getProfile(session.profile.id);
     // The rewrite intensity chosen in the modal *now* applies (the user may want a heavier or lighter take on a retry)
-    const intensity = normalizeIntensity(getSettings().settings.intensity);
+    const live = getSettings().settings;
+    const intensity = normalizeIntensity(live.intensity);
     const messages = buildMessages({
-        systemPrompt: session.systemPrompt, context: session.context, items: [item], instruction: session.instruction, intensity,
+        systemPrompt: session.systemPrompt, context: session.context, items: [item], instruction: session.instruction, intensity, intensityTexts: live.intensityTexts, formatRules: session.formatRules,
         attempts: item.attempts.length ? item.attempts : null, regenNote: note,
     });
     // Without earlier attempts (entry was "no changes"), still pass the guidance through the regeneration path

@@ -9,6 +9,7 @@ import { prepareSession, sendSession, runState, describeError } from './revision
 import { renderSession } from './review.js';
 import { normalizeDepth, depthLabel } from './depth.js';
 import { INTENSITIES, normalizeIntensity } from './intensity.js';
+import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -74,11 +75,30 @@ const TEMPLATE = `
             <div id="lorerev_books"></div>
         </div>
         <div class="lorerev_main">
+            <div class="lorerev_prompts">
             <details class="lorerev_system">
-                <summary>System prompt</summary>
+                <summary>System prompt <span class="lorerev_edited" id="lorerev_system_edited"></span></summary>
                 <textarea id="lorerev_system" class="text_pole" rows="6"></textarea>
-                <div class="menu_button" id="lorerev_system_reset">Reset to default</div>
+                <div class="menu_button lorerev_restore" id="lorerev_system_reset" title="Put the original system prompt back">Restore default</div>
             </details>
+            <details class="lorerev_system" id="lorerev_int_box">
+                <summary>Rewrite intensity wording <span class="lorerev_edited" id="lorerev_int_edited"></span></summary>
+                <div class="lorerev_dim">The text that is added to the system message for the intensity chosen at the top. Each level is edited separately. The heading <code>## Rewrite intensity: &lt;level&gt;</code> is added automatically and stays fixed, so the system prompt's reference to the "Rewrite intensity" section remains valid.</div>
+                ${Object.entries(INTENSITIES).map(([k, v]) => `
+                <div class="lorerev_part">
+                    <div class="lorerev_part_head"><b>${v.label}</b> <span class="lorerev_edited" data-edited="${k}"></span>
+                        <div class="menu_button lorerev_restore" data-restore="${k}" title="Put the original ${v.label} wording back">Restore default</div></div>
+                    <textarea class="text_pole lorerev_int_text" data-level="${k}" rows="3"></textarea>
+                </div>`).join('')}
+            </details>
+            <details class="lorerev_system" id="lorerev_rules_box">
+                <summary>Reply format rules (advanced) <span class="lorerev_edited" id="lorerev_rules_edited"></span></summary>
+                <div class="lorerev_dim">Appended to the system message, last. They tell the model how to answer so LoreReviser can read the reply. Keep it a JSON array of objects with an <code>id</code> (a warning appears below if an edit would break that).</div>
+                <div id="lorerev_rules_warn" class="lorerev_rules_warn" style="display:none"></div>
+                <textarea id="lorerev_rules" class="text_pole" rows="10"></textarea>
+                <div class="menu_button lorerev_restore" id="lorerev_rules_reset" title="Put the original reply format rules back">Restore default</div>
+            </details>
+            </div>
             <div id="lorerev_chat" class="lorerev_chat"></div>
             <div class="lorerev_infobar">
                 <div id="lorerev_selected_info" class="lorerev_dim"></div>
@@ -136,10 +156,61 @@ export async function openModal() {
 
     // --- system prompt ---
     const $system = $root.find('#lorerev_system').val(settings.systemPrompt);
-    $system.on('input', () => { settings.systemPrompt = String($system.val()); save(); });
+    const markEdited = ($el, on) => $el.text(on ? '(edited)' : '');
+    const refreshSystemMark = () => markEdited($root.find('#lorerev_system_edited'), settings.systemPrompt.trim() !== DEFAULT_SYSTEM_PROMPT.trim());
+    $system.on('input', () => { settings.systemPrompt = String($system.val()); refreshSystemMark(); save(); });
     $root.find('#lorerev_system_reset').on('click', () => {
         $system.val(DEFAULT_SYSTEM_PROMPT).trigger('input');
     });
+    refreshSystemMark();
+
+    // --- rewrite intensity wording (one editable text per level; settings keep only the edited ones) ---
+    const refreshIntMarks = () => {
+        let any = false;
+        for (const k of Object.keys(INTENSITIES)) {
+            const on = k in settings.intensityTexts;
+            any ||= on;
+            markEdited($root.find(`[data-edited="${k}"]`), on);
+        }
+        markEdited($root.find('#lorerev_int_edited'), any);
+    };
+    $root.find('.lorerev_int_text').each(function () {
+        const $t = $(this), k = String($t.data('level'));
+        const defaults = INTENSITIES[k].text;
+        $t.val(settings.intensityTexts[k] ?? defaults);
+        $t.on('input', () => {
+            const v = String($t.val());
+            // An empty or unchanged text means "use the default"; only real edits are stored, so default improvements still reach you.
+            if (!v.trim() || v.trim() === defaults.trim()) delete settings.intensityTexts[k]; else settings.intensityTexts[k] = v;
+            refreshIntMarks(); save();
+        });
+        $t.on('change', () => { if (!String($t.val()).trim()) $t.val(defaults); }); // left empty: show the default that is used
+    });
+    $root.find('[data-restore]').on('click', function () {
+        const k = String($(this).data('restore'));
+        $root.find(`.lorerev_int_text[data-level="${k}"]`).val(INTENSITIES[k].text).trigger('input');
+    });
+    refreshIntMarks();
+
+    // --- reply format rules, with a warning when they would break the parser ---
+    const $rules = $root.find('#lorerev_rules').val(settings.formatRules || DEFAULT_FORMAT_RULES);
+    const $rulesWarn = $root.find('#lorerev_rules_warn');
+    const refreshRules = () => {
+        const v = String($rules.val());
+        const problems = checkFormatRules(v);
+        if (problems.length) {
+            $rulesWarn.text(`Warning: these rules may break reading the reply (${problems.join('; ')}). ${FORMAT_RULES_NOTE} If the model does not answer in that format, no changes can be shown. Use "Restore default" to go back to the original rules.`).show();
+        } else $rulesWarn.hide().text('');
+        markEdited($root.find('#lorerev_rules_edited'), !!settings.formatRules);
+    };
+    $rules.on('input', () => {
+        const v = String($rules.val());
+        if (!v.trim() || v.trim() === DEFAULT_FORMAT_RULES.trim()) settings.formatRules = ''; else settings.formatRules = v;
+        refreshRules(); save();
+    });
+    $rules.on('change', () => { if (!String($rules.val()).trim()) { $rules.val(DEFAULT_FORMAT_RULES); refreshRules(); } });
+    $root.find('#lorerev_rules_reset').on('click', () => $rules.val(DEFAULT_FORMAT_RULES).trigger('input'));
+    refreshRules();
 
     // --- sidebar ---
     const $books = $root.find('#lorerev_books');
@@ -307,6 +378,12 @@ export async function openModal() {
             const t = session.tokens;
             if (t.tooBig) {
                 const warn = `The prompt is about ${t.promptTokens} tokens and the reply may use up to ${t.maxTokens}, which may not fit in the context of ${t.limit} tokens (from ${t.source}). Sending anyway; if it fails or is cut off, select fewer entries, lower the depth, or raise "Context" if your model allows more.`;
+                toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
+                conversation.splice(-1, 0, { role: 'warn', text: warn });
+            }
+            const ruleProblems = checkFormatRules(settings.formatRules || DEFAULT_FORMAT_RULES);
+            if (ruleProblems.length) {
+                const warn = `Your edited reply format rules may break reading the model's reply (${ruleProblems.join('; ')}). ${FORMAT_RULES_NOTE} Sending anyway; if no changes show up, use "Restore default" under "Reply format rules (advanced)".`;
                 toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
                 conversation.splice(-1, 0, { role: 'warn', text: warn });
             }

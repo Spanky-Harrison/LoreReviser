@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { parseRevisionReply as P, integrityWarnings as W, sameAsOriginal } from '../parse.js';
 import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
 import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
-import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection } from '../intensity.js';
+import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection, intensityText } from '../intensity.js';
+import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
+import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
 
 let n = 0;
@@ -169,5 +171,31 @@ t('intensity wording: each level says what it allows', () => {
     assert.match(b, /Balanced/); assert.match(b, /essence/); assert.match(h, /Heavy-handed/); assert.match(h, /restructure/);
     assert.equal(intensitySection('garbage'), b);
     assert.ok(new Set([l, b, h]).size === 3);
+});
+t('intensity: edited wording replaces only that level; heading stays fixed', () => {
+    const o = { light: 'MY LIGHT' };
+    assert.equal(intensitySection('light', o), '## Rewrite intensity: Light touch\nMY LIGHT');
+    assert.equal(intensityText('balanced', o), INTENSITIES.balanced.text);
+    assert.equal(intensitySection('balanced', o), intensitySection('balanced'));
+    assert.equal(intensityText('light', { light: '   ' }), INTENSITIES.light.text); // blank = default
+    assert.equal(intensityText('light', { light: 5 }), INTENSITIES.light.text);
+    assert.equal(intensityText('light', null), INTENSITIES.light.text);
+});
+t('system prompt refers to the fixed "Rewrite intensity" heading', () => {
+    assert.match(DEFAULT_SYSTEM_PROMPT, /Rewrite intensity/);
+    for (const k of Object.keys(INTENSITIES)) assert.ok(intensitySection(k, { [k]: 'x' }).startsWith('## Rewrite intensity: '));
+});
+t('format rules: default is fine, broken edits are flagged', () => {
+    assert.deepEqual(checkFormatRules(DEFAULT_FORMAT_RULES), []);
+    assert.ok(DEFAULT_FORMAT_RULES.startsWith('## Reply format (strict)'));
+    assert.equal(checkFormatRules('').length, 1); assert.equal(checkFormatRules(undefined).length, 1);
+    assert.ok(checkFormatRules('Answer with a poem.').length >= 3);
+    assert.deepEqual(checkFormatRules('Reply with a JSON array of {id, content}.'), []);
+    assert.match(checkFormatRules('Reply with an array of {id, content}.').join(), /JSON/);
+    assert.match(FORMAT_RULES_NOTE, /JSON array of \{id, keys\?, secondary_keys\?, content\?, note\?\}/);
+});
+t('format rules: blank means the default', () => {
+    assert.equal(effectiveFormatRules(''), DEFAULT_FORMAT_RULES); assert.equal(effectiveFormatRules(undefined), DEFAULT_FORMAT_RULES);
+    assert.equal(effectiveFormatRules('  \n'), DEFAULT_FORMAT_RULES); assert.equal(effectiveFormatRules('mine json array id content'), 'mine json array id content');
 });
 console.log(`${n} unit tests passed`);

@@ -35,6 +35,8 @@ const LEGACY_DEFAULT_PROMPTS = [
 const DEFAULT_SETTINGS = {
     profileId: '',                    // Connection Manager profile id ('' = none chosen)
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    intensityTexts: {},               // edited wordings per intensity level; a missing/blank level uses the default (see intensity.js)
+    formatRules: '',                  // edited reply-format rules; '' = the default (see rules.js)
     intensity: DEFAULT_INTENSITY,     // rewrite intensity: 'light' | 'balanced' | 'heavy'
     depth: 0,                         // last X chat messages to send; 0 = whole chat; -1 = no chat at all
     replyTokens: 0,                   // max tokens for the model's reply; 0 = automatic
@@ -47,6 +49,8 @@ export function getSettings() {
     // Fill in defaults in place so every caller shares the same object that ST saves.
     const settings = (extensionSettings[MODULE_NAME] ??= {});
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) settings[key] ??= value;
+    if (!settings.intensityTexts || typeof settings.intensityTexts !== 'object' || Array.isArray(settings.intensityTexts)) settings.intensityTexts = {};
+    if (typeof settings.formatRules !== 'string') settings.formatRules = '';
     settings.intensity = normalizeIntensity(settings.intensity);
     settings.depth = normalizeDepth(settings.depth); // hand-edited / old values: whole number, at least -1
     if (LEGACY_DEFAULT_PROMPTS.includes(settings.systemPrompt)) settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
