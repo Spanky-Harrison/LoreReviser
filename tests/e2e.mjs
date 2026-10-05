@@ -113,6 +113,9 @@ try {
   await page.fill('#lorerev_depth', '3');
   const info1 = await page.textContent('#lorerev_depth_info');
   check('depth 3 -> 3 of 8', info1 === '3 of 8 messages will be sent', info1);
+  // rewrite intensity: default, persisted
+  check('intensity select: three options, default Balanced', (await page.locator('#lorerev_intensity option').allTextContents()).join('|') === 'Light touch|Balanced|Heavy-handed' && (await page.inputValue('#lorerev_intensity')) === 'balanced');
+  await page.selectOption('#lorerev_intensity', 'light');
   // depth -1 = no chat at all
   check('depth input allows -1 (min attribute)', (await page.getAttribute('#lorerev_depth', 'min')) === '-1');
   await page.fill('#lorerev_depth', '-1');
@@ -175,6 +178,7 @@ try {
   check('reopen: selection restored', (await page.textContent('#lorerev_selected_info')) === '5 entries selected in 2 book(s)');
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
+  check('reopen: intensity restored', (await page.inputValue('#lorerev_intensity')) === 'light');
   check('reopen: depth -1 restored with its label', (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
   await page.click('dialog[open] .popup-button-ok');
   await page.waitForTimeout(800);
@@ -189,7 +193,7 @@ try {
   const persisted = await page.evaluate(() => JSON.stringify(SillyTavern.getContext().extensionSettings.LoreReviser));
   console.log('after reload settings:', persisted);
   const p = JSON.parse(persisted);
-  check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === -1);
+  check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === -1 && p.intensity === 'light');
 } catch (e) {
   console.log('TEST ERROR', e);
   failures++;

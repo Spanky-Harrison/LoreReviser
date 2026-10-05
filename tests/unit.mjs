@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { parseRevisionReply as P, integrityWarnings as W, sameAsOriginal } from '../parse.js';
 import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
 import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
+import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection } from '../intensity.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
 
 let n = 0;
@@ -156,5 +157,17 @@ t('dedupe: identical text twice in the lore -> only one occurrence per selected 
     const r = dedupeLore(L('Same\nSame'), [cand('E1', 'Same')]);
     assert.equal(r.src.before, 'Same');
     assert.equal(dedupeLore(L('Same\nSame'), [cand('E1', 'Same'), cand('E2', 'Same')]).src.before, '');
+});
+t('intensity: three levels, default Balanced, junk falls back', () => {
+    assert.deepEqual(Object.keys(INTENSITIES), ['light', 'balanced', 'heavy']); assert.equal(DEFAULT_INTENSITY, 'balanced');
+    assert.equal(normalizeIntensity('heavy'), 'heavy'); assert.equal(normalizeIntensity('nope'), 'balanced'); assert.equal(normalizeIntensity(undefined), 'balanced');
+    assert.equal(normalizeIntensity('toString'), 'balanced'); assert.equal(normalizeIntensity('__proto__'), 'balanced');
+});
+t('intensity wording: each level says what it allows', () => {
+    const l = intensitySection('light'), b = intensitySection('balanced'), h = intensitySection('heavy');
+    assert.match(l, /Light touch/); assert.match(l, /MUST change/); assert.match(l, /pronouns/); assert.match(l, /verbatim/);
+    assert.match(b, /Balanced/); assert.match(b, /essence/); assert.match(h, /Heavy-handed/); assert.match(h, /restructure/);
+    assert.equal(intensitySection('garbage'), b);
+    assert.ok(new Set([l, b, h]).size === 3);
 });
 console.log(`${n} unit tests passed`);

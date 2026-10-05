@@ -4,6 +4,8 @@
 import { splitKeywordsAndRegexes } from '../../../world-info.js';
 import { extractMessageFromData } from '../../../../script.js';
 import { parseRevisionReply, sameAsOriginal } from './parse.js';
+import { getSettings } from './settings.js';
+import { normalizeIntensity } from './intensity.js';
 import { buildMessages, countTokens, verifyEntriesSent, gatherContext, loadSelectedEntries, resolveContextLimit, resolveReplyTokens } from './prompt.js';
 
 /**
@@ -35,13 +37,15 @@ function normKeys(value, fallback) {
 }
 
 /** Turns a parsed reply element into a complete proposal. Missing fields keep the original values. */
-function toAttempt(el, original) {
+function toAttempt(el, original, intensity = null, request = '') {
     return {
         keys: normKeys(el.keys, original.keys),
         secondary: normKeys(el.secondary_keys, original.secondary),
         content: typeof el.content === 'string' ? el.content : original.content,
         note: typeof el.note === 'string' ? el.note.trim() : '',
         edited: false,
+        intensity,                 // rewrite intensity this attempt was made with
+        request,                   // the user's extra request for this regeneration ('' for the first pass)
     };
 }
 
@@ -99,7 +103,7 @@ function applyReply(session, items, parsed) {
         const item = items.find(i => i.id === id);
         if (!item) { session.parse.unknownIds.push(String(el.id)); continue; }
         seen.add(id);
-        const attempt = toAttempt(el, item.original);
+        const attempt = toAttempt(el, item.original, session.intensity);
         item.missingNote = null;
         if (sameAsOriginal(item.original, attempt)) { item.status = 'unchanged'; continue; } // returned but identical: no change
         item.attempts = [attempt]; item.index = 0; item.status = 'proposed';
@@ -148,11 +152,11 @@ export async function prepareSession({ profile, settings, selection, instruction
     const maxTokens = await resolveReplyTokens(settings, items);
     const session = {
         id: Date.now(), instruction, profile: { id: profile.id, name: profile.name },
-        systemPrompt: settings.systemPrompt, context, items, maxTokens, rawReplies: [],
+        systemPrompt: settings.systemPrompt, intensity: normalizeIntensity(settings.intensity), context, items, maxTokens, rawReplies: [],
         status: 'ready', error: null, parse: null, createdAt: new Date(),
     };
     for (const it of items) Object.assign(it, { attempts: [], index: -1, status: 'unchanged', error: null });
-    const messages = buildMessages({ systemPrompt: session.systemPrompt, context, items, instruction });
+    const messages = buildMessages({ systemPrompt: session.systemPrompt, context, items, instruction, intensity: session.intensity });
     const check = verifyEntriesSent(items, messages);
     const dupes = context.loreRemoved.map(x => x.id);
     console.info(`[LoreReviser] entries requested: ${check.requested.join(',')}; entries in prompt: ${check.sent.join(',')}; already active, sent once (removed from active lore): ${dupes.join(',') || '-'}; still also in active lore: ${check.alsoInLore.join(',') || '-'}`);
@@ -192,7 +196,7 @@ export async function sendSession(session, signal) {
 export async function retryMissing(session, items, signal) {
     if (!items.length) return;
     const profile = ctx().ConnectionManagerRequestService.getProfile(session.profile.id);
-    const messages = buildMessages({ systemPrompt: session.systemPrompt, context: session.context, items, instruction: session.instruction });
+    const messages = buildMessages({ systemPrompt: session.systemPrompt, context: session.context, items, instruction: session.instruction, intensity: session.intensity });
     const info = await ask(profile, messages, session.maxTokens, signal);
     const parsed = readReply(session, info);
     if (parsed.error) throw new Error(parsed.error);
@@ -205,8 +209,10 @@ export async function retryMissing(session, items, signal) {
  */
 export async function regenerateItem(session, item, note, signal) {
     const profile = ctx().ConnectionManagerRequestService.getProfile(session.profile.id);
+    // The rewrite intensity chosen in the modal *now* applies (the user may want a heavier or lighter take on a retry)
+    const intensity = normalizeIntensity(getSettings().settings.intensity);
     const messages = buildMessages({
-        systemPrompt: session.systemPrompt, context: session.context, items: [item], instruction: session.instruction,
+        systemPrompt: session.systemPrompt, context: session.context, items: [item], instruction: session.instruction, intensity,
         attempts: item.attempts.length ? item.attempts : null, regenNote: note,
     });
     // Without earlier attempts (entry was "no changes"), still pass the guidance through the regeneration path
@@ -218,7 +224,7 @@ export async function regenerateItem(session, item, note, signal) {
     if (parsed.error) throw new Error(`Could not read the model's reply: ${parsed.error}${info.lengthHit ? ` (the model hit the reply limit: ${describeEnd(info, session.maxTokens)})` : ''}`);
     const el = parsed.entries.find(e => normId(e.id) === item.id) ?? (parsed.entries.length === 1 ? parsed.entries[0] : null);
     if (!el) throw new Error(parsed.truncated ? `The reply ended before this entry (${describeEnd(info, session.maxTokens)}). Raise "Reply tokens" and try again.` : 'The model did not return this entry.');
-    item.attempts.push(toAttempt(el, item.original));
+    item.attempts.push(toAttempt(el, item.original, intensity, String(note ?? '').trim()));
     item.index = item.attempts.length - 1;
     item.status = 'proposed';
 }
