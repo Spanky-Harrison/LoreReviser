@@ -347,6 +347,16 @@ try {
   check('O: Changes view: removed blocks followed by added blocks, unchanged sentences dimmed', (await tcard.locator('.lorerev_blk_del').count()) >= 1 && (await tcard.locator('.lorerev_blk_ins').count()) >= 1 && (await tcard.locator('.lorerev_blk_same').count()) >= 1);
   const order = await tcard.locator('.lorerev_blk').evaluateAll(els => els.map(e => e.className.replace(/.*lorerev_blk_/, '')).join(','));
   check('O: in Changes every removed block is directly followed by its added block', /del,ins/.test(order) && !/ins,del/.test(order), order);
+  // Formatting: blocks keep newlines (not space-joined into one flat blob); New/Old keep paragraph breaks too.
+  const blkInner = await tcard.locator('.lorerev_blk').evaluateAll(els => els.map(e => e.innerText));
+  check('O: Changes view preserves multi-line structure (newlines inside blocks or several blocks, not one flattened blob)', blkInner.some(t => t.includes('\n')) || blkInner.length >= 3, JSON.stringify(blkInner.map(t => t.slice(0, 40))));
+  const preWrap = await tcard.locator('.lorerev_blk').first().evaluate(el => getComputedStyle(el).whiteSpace);
+  check('O: Changes blocks use pre-wrap so newlines render', preWrap === 'pre-wrap', preWrap);
+  await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
+  check('O: New view keeps paragraph newlines', (await tcard.locator('.lorerev_text').innerText()).includes('\n'));
+  await tcard.locator('.lorerev_view', { hasText: 'Old' }).click();
+  check('O: Old view keeps paragraph newlines', (await tcard.locator('.lorerev_text').innerText()).includes('\n'));
+  await tcard.locator('.lorerev_view', { hasText: 'Changes' }).click();
   await shot('26-block-changes.png');
   await page.setViewportSize({ width: 600, height: 900 });
   await tcard.locator('.lorerev_view', { hasText: 'Full Compare' }).click();

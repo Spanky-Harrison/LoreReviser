@@ -66,6 +66,8 @@ try {
   const recs = () => hist().locator('.lorerev_hist_rec');
   const confirmDlg = () => page.locator('dialog[open]').filter({ hasText: 'Restore the old version?' });
   const closeHist = async () => { await hist().locator('.popup-button-ok').click(); await hist().waitFor({ state: 'detached' }); };
+  const isHistFolded = (rec) => rec.evaluate(el => el.classList.contains('lorerev_hist_folded'));
+  const expandHist = async (rec) => { if (await isHistFolded(rec)) await rec.locator('.lorerev_card_title').click(); };
   const shot = async (name) => { await page.evaluate(() => toastr.clear()); await page.waitForTimeout(1300); await page.screenshot({ path: `${SHOTS}/${name}` }); };
 
   const eldoriaBefore = await bookOnServer('Eldoria');
@@ -206,6 +208,42 @@ try {
   check('6: entry without saved changes -> plain message', /No saved changes yet for this entry/.test(await hist().textContent()));
   await closeHist();
 
+  // ================= 6b. History without cards; collapsible History rows =================
+  // Clear the chat so there are no review cards, then History must still open (clock + top button).
+  await page.click('#lorerev_clear');
+  const clearDlg = page.locator('dialog[open]').filter({ hasText: 'Clear the chat?' });
+  if (await clearDlg.count()) await clearDlg.locator('.popup-button-ok').click();
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 0);
+  check('6b: chat cleared (no review cards)', (await page.locator('.lorerev_session').count()) === 0);
+  await book('Eldoria').locator('.lorerev_hist_btn').click();
+  await hist().waitFor(); await recs().first().waitFor();
+  check('6b: sidebar clock opens History with empty chat / no cards', (await recs().count()) >= 1);
+  // Collapsible: newest expanded, older folded
+  check('6b: newest History row starts expanded', !(await isHistFolded(recs().first())));
+  if ((await recs().count()) > 1) {
+    check('6b: older History row starts collapsed', await isHistFolded(recs().nth(1)));
+    check('6b: collapsed row shows summary (title + action), not Restore', (await recs().nth(1).locator('.lorerev_btn_restore').count()) === 0 && /Queen Maren|Approved change|Restored/.test(await recs().nth(1).locator('.lorerev_card_title').textContent()));
+    await expandHist(recs().nth(1));
+    check('6b: header click expands an older row', !(await isHistFolded(recs().nth(1))) && (await recs().nth(1).locator('.lorerev_btn_restore').count()) === 1);
+    await recs().nth(1).locator('.lorerev_card_title').click();
+    check('6b: header click folds it again', await isHistFolded(recs().nth(1)));
+  }
+  // Changes view in History keeps structured (multi-line) blocks when present
+  await expandHist(recs().first());
+  const histBlks = await recs().first().locator('.lorerev_blk').evaluateAll(els => els.map(e => e.innerText));
+  check('6b: History Changes view uses block elements (not a missing diff)', histBlks.length >= 1);
+  await closeHist();
+  // Top-level History button (two books have archives: Eldoria + Chat Lore) -> picker then open
+  await page.click('#lorerev_top_hist');
+  const pickDlg = page.locator('dialog[open]').filter({ hasText: 'Pick a lorebook that has saved changes' });
+  await pickDlg.waitFor();
+  check('6b: top History lists books with archives', (await pickDlg.locator('option').count()) >= 2);
+  await pickDlg.locator('select').selectOption('Eldoria');
+  await pickDlg.locator('.popup-button-ok').click();
+  await hist().waitFor(); await recs().first().waitFor();
+  check('6b: top History opens the chosen book', /History: Eldoria/.test(await hist().locator('h3').textContent()));
+  await closeHist();
+
   // ================= 7. orphaned archive + relink =================
   await closeModal();
   await page.evaluate(async () => {
@@ -237,6 +275,8 @@ try {
   await page.evaluate(() => { import('/scripts/extensions/third-party/LoreReviser/history.js').then(m => m.openHistory({ book: 'Chat Lore Renamed' })); });
   await hist().waitFor(); await recs().first().waitFor();
   check('7: History of the relinked book shows its records', (await recs().count()) === 3);
+  check('7: older rows are collapsed by default', await isHistFolded(recs().last()));
+  await expandHist(recs().last());
   await recs().last().locator('.lorerev_btn_restore').click(); // the first approval: its old side is the original text
   await confirmDlg().waitFor(); await confirmDlg().locator('.popup-button-ok').click();
   await page.waitForFunction(() => document.querySelectorAll('dialog.lorerev_hist_popup .lorerev_hist_rec').length === 4);

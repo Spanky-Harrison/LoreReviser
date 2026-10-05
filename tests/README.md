@@ -15,7 +15,7 @@ SHOTS_DIR=/tmp/shots node tests/e2e-extra.mjs  # no-chat warning, per-chat selec
 # then restart ST fresh (start-test-st.sh + fixtures.mjs) and run:
 SHOTS_DIR=/tmp/shots node tests/e2e-revision.mjs  # whole revision flow against the fake model
 # and once more on a fresh instance:
-SHOTS_DIR=/tmp/shots node tests/e2e-archive.mjs   # saving, History/Restore, stale checks, folding cards, relink
+SHOTS_DIR=/tmp/shots node tests/e2e-archive.mjs   # saving, History/Restore, stale checks, folding cards, History without cards, collapsible History rows, relink
 ```
 
 Run the fixtures once per fresh instance, and `e2e.mjs` before `e2e-extra.mjs` (the second relies on the saved selection).
