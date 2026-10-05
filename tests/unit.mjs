@@ -7,8 +7,8 @@ import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection, i
 import { CHANGE_TYPES, DEFAULT_CHANGE_TYPE, normalizeChangeType, changeTypeText, changeTypeSection } from '../changetype.js';
 import { wiBudget, wiScanContext, budgetNote } from '../budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
-import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
-import { blockDiff, splitBlocks, listDiff } from '../diff.js';
+import { DEFAULT_SYSTEM_PROMPT, getSettings, LEGACY_DEFAULT_PROMPTS, LEGACY_CREATE_PROMPTS } from '../settings.js';
+import { blockDiff, splitBlocks, listDiff, sentenceSpans, proposalHunks, applyHunkEdits } from '../diff.js';
 import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive } from '../archive-core.js';
 import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, effectiveCreateRules, effectiveCreatePrompt, proposalId, NOT_COPIED, settingsFrom, freeUid, nextDisplayIndex, toProposal, proposalLabel, proposalWarnings, entryMatches, buildCreateMessages } from '../create-core.js';
 
@@ -412,5 +412,59 @@ t('History records for new entries: create / remove / recreate', () => {
     assert.deepEqual([...uidsInArchive({ records: [{ uid: 1, snapshot: { uid: 9 } }] })].sort(), [1, 9]);
     assert.equal(uidsInArchive(null).size, 0);
     assert.equal(actionLabel('create'), 'New entry created'); assert.match(actionLabel('remove'), /removed/); assert.match(actionLabel('recreate'), /created again/);
+});
+t('sentenceSpans: exact slices that join back to the text', () => {
+    for (const s of ['A. B! C?\nD e.f g.\n\n  E.  ', '\n\nX. Y', '', 'No end', 'Say "hi." Then. 3.5 is ok.', 'HEIGHT: 180 cm\nHAIR: black\n']) assert.equal(sentenceSpans(s).join(''), s);
+    assert.deepEqual(sentenceSpans('One. Two.\nThree'), ['One. ', 'Two.\n', 'Three']);
+    assert.deepEqual(sentenceSpans(''), []);
+});
+t('proposalHunks: changed sentences become hunks, the rest is kept', () => {
+    const h = proposalHunks('One. Two. Three.\nFour.', 'One. Deux. Three.\nFour. Five.');
+    assert.deepEqual(h.map(x => x.type), ['same', 'change', 'same', 'change']);
+    assert.deepEqual([h[1].old, h[1].core, h[1].tail], ['Two.', 'Deux.', ' ']);
+    assert.deepEqual([h[3].old, h[3].core], ['', 'Five.']);
+    assert.deepEqual(proposalHunks('a. b.', 'a. b.').map(x => x.type), ['same']);
+    const del = proposalHunks('A. B. C.', 'A. C.');
+    assert.deepEqual(del[1], { type: 'change', old: 'B.', text: '', core: '', tail: '' });
+});
+t('applyHunkEdits: no edits = the proposal exactly; edits land in place; untouched text stays byte for byte', () => {
+    const o = 'NAME: Mara\nHEIGHT: 170 cm\nHAIR: brown, long.\nShe likes  tea.', n = 'NAME: Mara\nHEIGHT: 172 cm\nHAIR: grey, short.\nShe likes  tea.';
+    const h = proposalHunks(o, n);
+    assert.equal(applyHunkEdits(h), n); assert.equal(applyHunkEdits(h, {}), n);
+    const k = h.findIndex(x => x.type === 'change');
+    assert.equal(h[k].core, 'HEIGHT: 172 cm\nHAIR: grey, short.');
+    assert.equal(applyHunkEdits(h, { [k]: 'HEIGHT: 175 cm\nHAIR: grey, short.' }), 'NAME: Mara\nHEIGHT: 175 cm\nHAIR: grey, short.\nShe likes  tea.');
+    const h2 = proposalHunks('One. Two. Three.\nFour.', 'One. Deux. Three.\nFour. Five.');
+    assert.equal(applyHunkEdits(h2, { 1: 'Zwei.' }), 'One. Zwei. Three.\nFour. Five.');
+    assert.equal(applyHunkEdits(h2, { 1: '' }), 'One. Three.\nFour. Five.'); // emptied hunk is removed
+    assert.equal(applyHunkEdits(h2, { 3: '  ' }), 'One. Deux. Three.\nFour.');
+});
+t('applyHunkEdits: text typed into a pure removal is inserted with matching separators', () => {
+    assert.equal(applyHunkEdits(proposalHunks('A. B. C.', 'A. C.'), { 1: 'B2.' }), 'A. B2. C.');
+    assert.equal(applyHunkEdits(proposalHunks('A.\nB.\nC.', 'A.\nC.'), { 1: 'B2.' }), 'A.\nB2.\nC.');
+    assert.equal(applyHunkEdits(proposalHunks('A. B.', 'A.'), { 1: 'B.' }), 'A. B.');
+    assert.equal(applyHunkEdits(proposalHunks('A. B.', 'B.'), { 0: 'A.' }), 'A. B.');
+});
+t('every default prompt part forbids renaming or misspelling existing headings', () => {
+    const parts = { system: DEFAULT_SYSTEM_PROMPT, rules: DEFAULT_FORMAT_RULES, createSystem: DEFAULT_CREATE_SYSTEM_PROMPT, createRules: DEFAULT_CREATE_FORMAT_RULES,
+        ...Object.fromEntries(Object.entries(INTENSITIES).map(([k, v]) => [k, v.text])), ...Object.fromEntries(Object.entries(CHANGE_TYPES).map(([k, v]) => [k, v.text])) };
+    for (const [name, text] of Object.entries(parts)) assert.match(text, /heading/i, name);
+    for (const name of ['system', 'rules', 'createSystem', 'createRules', 'balanced']) assert.match(parts[name], /HIGHT/, name);
+    for (const name of ['system', 'rules', 'heavy']) assert.match(parts[name], /explicitly asks/, name);
+    assert.match(DEFAULT_FORMAT_RULES, /use \\n in the JSON string\)/); // escaped, not a raw line break
+});
+t('settings: untouched old default prompts are upgraded, edited ones are kept', () => {
+    const store = {};
+    globalThis.SillyTavern = { getContext: () => ({ extensionSettings: store, saveSettingsDebounced: () => {} }) };
+    assert.ok(LEGACY_DEFAULT_PROMPTS.length >= 4 && LEGACY_CREATE_PROMPTS.length >= 1);
+    assert.ok(!LEGACY_DEFAULT_PROMPTS.includes(DEFAULT_SYSTEM_PROMPT) && !LEGACY_CREATE_PROMPTS.includes(DEFAULT_CREATE_SYSTEM_PROMPT));
+    store.LoreReviser = { systemPrompt: LEGACY_DEFAULT_PROMPTS[0], createSystemPrompt: LEGACY_CREATE_PROMPTS[0], intensityTexts: { light: 'MINE' } };
+    let { settings } = getSettings();
+    assert.equal(settings.systemPrompt, DEFAULT_SYSTEM_PROMPT); assert.equal(settings.createSystemPrompt, DEFAULT_CREATE_SYSTEM_PROMPT);
+    assert.deepEqual(settings.intensityTexts, { light: 'MINE' });
+    store.LoreReviser = { systemPrompt: LEGACY_DEFAULT_PROMPTS[0] + ' (my addition)', createSystemPrompt: 'My own create prompt' };
+    ({ settings } = getSettings());
+    assert.equal(settings.systemPrompt, LEGACY_DEFAULT_PROMPTS[0] + ' (my addition)'); assert.equal(settings.createSystemPrompt, 'My own create prompt');
+    delete globalThis.SillyTavern;
 });
 console.log(`${n} unit tests passed`);

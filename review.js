@@ -1,5 +1,6 @@
 // Review UI: draws one revision session in the chat window as a list of per-entry cards.
-// Each card: Approve / Reject / Edit / Regenerate, plus swipe-style paging between attempts.
+// Each card: Approve / Reject / Edit / Regenerate, plus swipe-style paging between attempts. On a revision card "Edit proposal"
+// edits only the changed (green) parts and the keys; "Edit full entry" opens the whole text.
 // New-entry sessions (session.kind === 'create', see create.js) use the same cards: the "Old" side is empty, the edit
 // form has a Title, Approve creates the entry and Undo removes it again.
 // All state lives on the session/item objects (see revision.js), so a card can be re-drawn at any time.
@@ -7,6 +8,7 @@
 import { splitKeywordsAndRegexes } from '../../../world-info.js';
 import { integrityWarnings, sameAsOriginal } from './parse.js';
 import { $el, keyChips, contentView } from './views.js';
+import { proposalHunks, applyHunkEdits } from './diff.js';
 import { openHistory } from './history.js';
 import { applyApproval, undoApproval, applyCreate, undoCreate } from './apply.js';
 import { regenerateCreateItem } from './create.js';
@@ -180,7 +182,7 @@ export function renderSession(session, hooks = {}) {
         }
         for (const w of created ? proposalWarnings(attempt, session.existing ?? []) : integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));
 
-        if (ui.editing) { $card.append(editForm(item, attempt)); return $card; }
+        if (ui.editing) { $card.append(ui.editing === 'proposal' && !created ? proposalForm(item, attempt) : editForm(item, attempt)); return $card; }
 
         if (created) $card.append($el('div', 'lorerev_keys lorerev_new_title').append($el('span', 'lorerev_dim', 'Title: '), attempt.title ? $el('b', '', attempt.title) : $el('span', 'lorerev_dim', '(none)')));
         $card.append(keyChips('Keys', item.original.keys, attempt.keys));
@@ -202,49 +204,116 @@ export function renderSession(session, hooks = {}) {
         return views;
     }
 
+    /** After a saved edit: back to "Proposed" (an approved card needs approving again). */
+    function afterEdit(item) {
+        if (item.status === 'approved') item.reapprove = true;
+        item.status = 'proposed'; item.applyMessage = null; item.notice = null; item.ui.editing = false; item.ui.draft = null; rerender(item);
+    }
+
     /**
-     * Inline editor. Edits go straight into the pending proposal (the attempt on screen), so what is in the boxes
-     * when you press "Save edit" is exactly what Approve will hand to the writer later. Works in every state:
-     * after Approve/Reject the card goes back to "Proposed" and needs approving again. For entries the model left
-     * unchanged (attempt = null) it creates a proposal written by you.
+     * Writes an edit into the pending proposal (the attempt on screen), so what was in the boxes is exactly what Approve
+     * will hand to the writer later. For entries the model left unchanged (attempt = null) it creates a proposal written by you.
+     * @param {{title?: string, keys: string[], secondary: string[], content: string}} v
+     */
+    function commitEdit(item, attempt, v) {
+        const created = item.kind === 'create';
+        const sameAs = (a, b) => sameAsOriginal(a, b) && (!created || (a.title ?? '') === (b.title ?? ''));
+        if (!attempt) {
+            if (sameAsOriginal(item.original, v)) { toastr.info('Nothing was changed.', 'LoreReviser'); item.ui.editing = false; item.ui.draft = null; return rerender(item); }
+            item.attempts.push({ ...v, note: 'Written by you: the model had left this entry unchanged.', edited: true, manual: true });
+            item.index = item.attempts.length - 1;
+        } else {
+            // remember what the model wrote so the edit can be undone
+            if (!attempt.modelVersion && !attempt.manual) attempt.modelVersion = { ...(created ? { title: attempt.title } : {}), keys: [...attempt.keys], secondary: [...attempt.secondary], content: attempt.content };
+            Object.assign(attempt, v);
+            const mv = attempt.modelVersion;
+            attempt.edited = attempt.manual || !(mv && sameAs(mv, v));
+        }
+        afterEdit(item);
+    }
+
+    /** "Save edit", "Cancel" and (when there is a model version) "Reset to the model's version". */
+    function editButtons(item, attempt, read, extra = []) {
+        const buttons = $el('div', 'lorerev_buttons');
+        buttons.append($el('div', 'menu_button lorerev_btn_save', 'Save edit').on('click', () => commitEdit(item, attempt, read())),
+            $el('div', 'menu_button', 'Cancel').on('click', () => { item.ui.editing = false; item.ui.draft = null; rerender(item); }), ...extra);
+        if (attempt?.modelVersion) buttons.append($el('div', 'menu_button lorerev_btn_reset', "Reset to the model's version").on('click', () => {
+            Object.assign(attempt, structuredClone(attempt.modelVersion), { edited: false }); delete attempt.modelVersion; afterEdit(item);
+        }));
+        return buttons;
+    }
+
+    const keyInputs = (base) => ({
+        keys: $('<input type="text" class="text_pole lorerev_ed_keys">').val(base.keys.join(', ')),
+        sec: $('<input type="text" class="text_pole lorerev_ed_sec">').val(base.secondary.join(', ')),
+    });
+
+    /**
+     * Full editor ("Edit full entry"; plain "Edit" on new-entry and "No changes" cards): title (new entries), keys and the
+     * whole text. Works in every state: after Approve/Reject the card goes back to "Proposed" and needs approving again.
      */
     function editForm(item, attempt) {
-        const base = attempt ?? item.original;
+        const base = item.ui.draft ?? attempt ?? item.original; // draft = what was typed in "Edit proposal" before switching here
         const created = item.kind === 'create';
-        const $f = $el('div', 'lorerev_edit');
+        const $f = $el('div', 'lorerev_edit lorerev_edit_full');
         const titleBox = created ? $('<input type="text" class="text_pole lorerev_ed_title">').val(base.title ?? '') : null;
         if (created) $f.append($el('label', '', 'Title'), titleBox);
-        const keys = $('<input type="text" class="text_pole lorerev_ed_keys">').val(base.keys.join(', '));
-        const sec = $('<input type="text" class="text_pole lorerev_ed_sec">').val(base.secondary.join(', '));
+        const { keys, sec } = keyInputs(base);
         const content = $('<textarea class="text_pole lorerev_ed_content" rows="12">').val(base.content);
         $f.append($el('label', '', 'Keys (comma separated; /regex/ allowed)'), keys, $el('label', '', 'Secondary keys'), sec,
             $el('label', '', 'Content: exactly this text is what will be saved when you approve'), content);
         const read = () => ({ ...(created ? { title: String(titleBox.val()).trim() } : {}), keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: String(content.val()) });
-        const sameAs = (a, b) => sameAsOriginal(a, b) && (!created || (a.title ?? '') === (b.title ?? ''));
-        const afterEdit = () => {
-            if (item.status === 'approved') item.reapprove = true;
-            item.status = 'proposed'; item.applyMessage = null; item.notice = null; item.ui.editing = false; rerender(item);
-        };
-        const buttons = $el('div', 'lorerev_buttons');
-        buttons.append($el('div', 'menu_button lorerev_btn_save', 'Save edit').on('click', () => {
-            const v = read();
-            if (!attempt) {
-                if (sameAsOriginal(item.original, v)) { toastr.info('Nothing was changed.', 'LoreReviser'); item.ui.editing = false; return rerender(item); }
-                item.attempts.push({ ...v, note: 'Written by you: the model had left this entry unchanged.', edited: true, manual: true });
-                item.index = item.attempts.length - 1;
-            } else {
-                // remember what the model wrote so the edit can be undone
-                if (!attempt.modelVersion && !attempt.manual) attempt.modelVersion = { ...(created ? { title: attempt.title } : {}), keys: [...attempt.keys], secondary: [...attempt.secondary], content: attempt.content };
-                Object.assign(attempt, v);
-                const mv = attempt.modelVersion;
-                attempt.edited = attempt.manual || !(mv && sameAs(mv, v));
+        return $f.append(editButtons(item, attempt, read));
+    }
+
+    /**
+     * "Edit proposal" (the default Edit on a revision card): the keys plus one box per changed part of the text, filled
+     * with the proposed (green) text, with the removed old text above it for reference. Unchanged text is shown dimmed
+     * and is kept exactly as it is; saving puts the edited parts back in place (diff.js applyHunkEdits).
+     */
+    function proposalForm(item, attempt) {
+        const segs = proposalHunks(item.original.content, attempt.content);
+        const $f = $el('div', 'lorerev_edit lorerev_edit_proposal');
+        const { keys, sec } = keyInputs(attempt);
+        $f.append($el('label', '', 'Keys (comma separated; /regex/ allowed)'), keys, $el('label', '', 'Secondary keys'), sec);
+        const boxes = new Map();
+        const $parts = $el('div', 'lorerev_hunks');
+        segs.forEach((seg, k) => {
+            if (seg.type === 'same') {
+                const full = seg.text.trim();
+                if (!full) return;
+                const $s = $el('div', 'lorerev_blk lorerev_blk_same lorerev_hunk_same');
+                if (full.length > 240) {
+                    $s.text(`${full.slice(0, 100)} … ${full.slice(-100)}`).addClass('lorerev_hunk_more').attr('title', 'Unchanged text (click to show all of it)')
+                        .one('click', () => $s.text(full).removeClass('lorerev_hunk_more').removeAttr('title'));
+                } else $s.text(full);
+                $parts.append($s);
+                return;
             }
-            afterEdit();
-        }), $el('div', 'menu_button', 'Cancel').on('click', () => { item.ui.editing = false; rerender(item); }));
-        if (attempt?.modelVersion) buttons.append($el('div', 'menu_button lorerev_btn_reset', "Reset to the model's version").on('click', () => {
-            Object.assign(attempt, structuredClone(attempt.modelVersion), { edited: false }); delete attempt.modelVersion; afterEdit();
-        }));
-        return $f.append(buttons);
+            const $h = $el('div', 'lorerev_hunk');
+            if (seg.old) $h.append($el('div', 'lorerev_blk lorerev_blk_del', seg.old).attr('data-mark', 'Removed'));
+            const rows = Math.min(10, Math.max(2, seg.core.split('\n').length + Math.floor(seg.core.length / 90)));
+            const box = $(`<textarea class="text_pole lorerev_ed_hunk" rows="${rows}">`).val(seg.core)
+                .attr('placeholder', seg.core ? '' : 'Nothing is added here (the old text above is removed). Type to put text at this spot.');
+            boxes.set(k, box);
+            $h.append(box);
+            if (seg.old) $h.append($el('div', 'lorerev_hunk_tools').append(
+                $el('div', 'menu_button lorerev_btn_mini lorerev_btn_hunk_old', 'Use old text').attr('title', 'Put the removed old text back in this box').on('click', () => box.val(seg.old).trigger('focus'))));
+            $parts.append($h);
+        });
+        $f.append($el('label', '', boxes.size ? 'Proposed changes: edit the green text. The dimmed text is unchanged and stays exactly as it is.' : 'Text'));
+        if (!boxes.size) $parts.append($el('div', 'lorerev_dim', 'The text is unchanged (only keys differ). Use "Edit full entry" to change the text.'));
+        $f.append($parts);
+        const read = () => {
+            const edits = {};
+            for (const [k, box] of boxes) edits[k] = String(box.val());
+            return { keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: applyHunkEdits(segs, edits) };
+        };
+        const toFull = $el('div', 'menu_button lorerev_btn_edit_full', 'Edit full entry').attr('title', 'Edit the whole entry text instead (keeps what you typed here)')
+            .on('click', () => { item.ui.draft = read(); item.ui.editing = 'full'; rerender(item); });
+        $f.append(editButtons(item, attempt, read, [toFull]));
+        setTimeout(() => $f.find('.lorerev_ed_hunk').first().trigger('focus'), 0);
+        return $f;
     }
 
     function buttonsRow(item, which) {
@@ -272,7 +341,17 @@ export function renderSession(session, hooks = {}) {
             if (item.written && !(await revert(item))) return;
             item.status = 'rejected'; item.reapprove = false; item.error = null; rerender(item);
         });
-        if (which.includes('edit')) btn('Edit', '', () => { ui.editing = true; rerender(item); });
+        if (which.includes('edit')) {
+            // A revision card with a proposal: "Edit proposal" (just the changed parts and the keys) is the main one; the
+            // whole text is one click further. New-entry and "No changes" cards have only the full editor.
+            const hasProposal = item.kind !== 'create' && ['proposed', 'approved', 'rejected'].includes(item.status) && !!currentAttempt(item);
+            if (hasProposal) {
+                btn('Edit proposal', 'lorerev_btn_edit', () => { ui.editing = 'proposal'; ui.draft = null; rerender(item); });
+                row.find('.lorerev_btn_edit').attr('title', 'Edit the proposed (green) changes and the keys');
+                btn('Edit full entry', 'lorerev_btn_edit_full', () => { ui.editing = 'full'; ui.draft = null; rerender(item); });
+                row.find('.lorerev_btn_edit_full').attr('title', 'Edit the whole entry text');
+            } else btn('Edit', 'lorerev_btn_edit', () => { ui.editing = 'full'; ui.draft = null; rerender(item); });
+        }
         if (which.includes('undo')) btn('Undo', '', async () => {
             if (item.status === 'approved' && item.written && !(await revert(item))) return;
             if (item.status !== 'approved') item.notice = null;

@@ -16,6 +16,7 @@ Guidelines:
 - Base every fact on the chat, the character information, the active lore and the user's instructions. Do not contradict them. Only fill gaps with invented detail where the user asks for it.
 - One subject per entry (a person, place, item, faction, event, custom, concept ...). Entries are compact reference texts, not summaries of the chat.
 - If a <format_example> is given, write every entry in the same style and layout as it: markdown, line breaks, bracket or tag styles (such as [Name: ...] or <tag>), field layouts (such as "Key: value" lines), list styles, casing, point of view and rough length. Use it for the format only; do not copy its facts. Without an example, follow the style of the existing lore.
+- Headings and field labels you take from the <format_example> or the existing lore (such as "HEIGHT:", "Hair:" or "[Appearance]") are copied exactly, character for character: same spelling, casing and punctuation. Never misspell them or invent variants (HEIGHT must not become HIGHT, HAIR must not become HAIIR), unless the user explicitly asks for different labels.
 - Follow the "Change type" section: it says whether the lore may describe how things came to be (a development in the story) or must read as though it had always been true (retcon).
 - Keys are the trigger words: names, nicknames or terms that will really appear in the chat. Give each entry 1 to 5 natural keys and avoid very common words.
 - Give each entry a short title, usually the name of its subject.`;
@@ -33,6 +34,7 @@ Rules:
 - "note": one short sentence for the user saying what the entry covers and why it is useful.
 - Propose as many entries as the request needs, usually one per subject. If no new entry is needed, reply [].
 - If the content has several lines or paragraphs, use \\n in the JSON string.
+- Headings and field labels taken from the <format_example> or the existing lore are spelled exactly as there (never a variant such as HIGHT for HEIGHT).
 - The reply must be valid JSON: escape double quotes inside strings as \\" and line breaks as \\n.`;
 
 const REQUIRED = [

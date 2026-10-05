@@ -122,6 +122,14 @@
 .lorerev_request { font-style: italic; }
 .lorerev_edit input, .lorerev_edit textarea { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
 .lorerev_edit label { display: block; font-size: 0.85em; opacity: 0.75; }
+.lorerev_hunks { margin-bottom: 6px; }
+.lorerev_hunk { margin: 4px 0; }
+.lorerev_hunk .lorerev_blk_del { margin: 0 0 3px; }
+.lorerev_edit textarea.lorerev_ed_hunk { margin-bottom: 2px; border-left: 3px solid #3c9a55; background-color: rgba(60, 160, 90, 0.12); resize: vertical; }
+.lorerev_hunk_same { margin: 2px 0; font-size: 0.95em; }
+.lorerev_hunk_more { cursor: pointer; }
+.lorerev_hunk_tools { display: flex; justify-content: flex-end; }
+.lorerev_btn_mini { font-size: 0.8em; padding: 1px 8px; margin: 0; }
 .lorerev_ok_line { color: #6fcf8a; margin: 4px 0; }
 .lorerev_error_line { color: #ff8a8a; margin: 4px 0; }
 
