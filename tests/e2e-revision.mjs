@@ -83,6 +83,7 @@ try {
   check('A: Queen Maren proposed', (await pill('Queen Maren').textContent()) === 'Proposed');
   check('A: Kingdom (returned identical) = no changes', (await pill('Kingdom of Eldoria').textContent()) === 'No changes');
   check('A: omitted entry = no changes', (await pill('The Missing Heir').textContent()) === 'No changes');
+  await card('Queen Maren').locator('.lorerev_view', { hasText: 'Full Compare' }).click();
   const cmpOld = await card('Queen Maren').locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').nth(0).locator('.lorerev_para_del').allTextContents();
   const cmpNew = await card('Queen Maren').locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').nth(1).locator('.lorerev_para_ins').allTextContents();
   check('A: compare view = whole old block | whole new block (no word-level marks)', cmpOld.join('').includes('54 years') && cmpNew.join('').includes('55 years') && (await card('Queen Maren').locator('.lorerev_ins, .lorerev_del, del, ins').count()) === 0);
@@ -140,10 +141,10 @@ try {
   check('D: request reuses the same context', u2.includes('<character_card>') && u2.includes('messages="3 of 8"'));
   await card('Queen Maren').locator('.lorerev_view', { hasText: 'New' }).click();
   check('D: shows new attempt', (await card('Queen Maren').locator('.lorerev_text').textContent()).startsWith('Regenerated'));
-  await card('Queen Maren').locator('.lorerev_pg', { hasText: '‹' }).click();
+  await card('Queen Maren').locator('.lorerev_swipe.fa-chevron-left').click();
   check('D: page back -> attempt 1 (the edited one)', (await card('Queen Maren').locator('.lorerev_pager').textContent()).includes('1/2') && (await card('Queen Maren').locator('.lorerev_text').textContent()).startsWith('Edited by the user'));
   await page.screenshot({ path: `${SHOTS}/17-regenerate-pager.png` });
-  await card('Queen Maren').locator('.lorerev_pg', { hasText: '›' }).click();
+  await card('Queen Maren').locator('.lorerev_swipe.fa-chevron-right').click();
   check('D: page forward -> 2/2', (await card('Queen Maren').locator('.lorerev_pager').textContent()).includes('2/2'));
 
   // regenerate an entry that had "no changes"
@@ -263,6 +264,12 @@ try {
   await page.click('#extensionsMenuButton'); await page.click('#lorereviser_open');
   await page.waitForSelector('.lorerev_book');
   check('M: sessions kept after reopen', (await page.locator('.lorerev_session').count()) === 5);
+  const pagers = await page.locator('.lorerev_pager .lorerev_swipe_count').allTextContents();
+  check('M: reopened cards show the attempt you were on (latest), not the first', pagers.length > 0 && pagers.every(t => { const [a, b] = t.split('/'); return a === b && a !== '1'; }), pagers.join(' '));
+  const pg = page.locator('.lorerev_pager:not(.lorerev_pager_locked)').first();
+  await pg.locator('.lorerev_swipe.fa-chevron-left').click();
+  check('M: swipe arrows still work after reopen', /^1\//.test(await page.locator('.lorerev_pager:not(.lorerev_pager_locked)').first().locator('.lorerev_swipe_count').textContent()));
+  await page.locator('.lorerev_pager:not(.lorerev_pager_locked)').first().locator('.lorerev_swipe.fa-chevron-right').click();
   await page.locator('.lorerev_session').first().locator('.lorerev_card').filter({ has: page.locator('.lorerev_card_title > b', { hasText: /^Queen Maren$/ }) }).locator('.lorerev_btn_no').click();
   check('M: cards still interactive after reopen', (await page.locator('.lorerev_session').first().locator('.lorerev_card').filter({ has: page.locator('.lorerev_card_title > b', { hasText: /^Queen Maren$/ }) }).locator('.lorerev_pill').textContent()) === 'Rejected');
 
@@ -320,7 +327,7 @@ try {
   await send('Add that the traveler is secretly mapping the Silverwood border for the queen.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 8);
   const tcard = card('Traveler Backstory');
-  check('O: compare is the default view, one aligned row old | new', (await tcard.locator('.lorerev_view_on').textContent()) === 'Compare' && (await tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').count()) === 2);
+  check('O: changes is the default view', (await tcard.locator('.lorerev_view_on').textContent()) === 'Changes'); await tcard.locator('.lorerev_view', { hasText: 'Full Compare' }).click(); check('O: full compare shows one aligned row old | new', (await tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').count()) === 2);
   check('O: both paragraphs changed -> 2 removed blocks left, 2 added blocks right', (await tcard.locator('.lorerev_para_del').count()) === 2 && (await tcard.locator('.lorerev_para_ins').count()) === 2);
   const cellText = (i) => tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').nth(i).textContent();
   check('O: old cell has the whole old text, new cell the whole new text', (await cellText(0)).includes('mother sold smoked eel') && (await cellText(0)).includes('rarely show them') && (await cellText(1)).includes('in secret') && (await cellText(1)).includes('ran a stall'));
@@ -332,7 +339,7 @@ try {
   check('O: in Changes every removed block is directly followed by its added block', /del,ins/.test(order) && !/ins,del/.test(order), order);
   await shot('26-block-changes.png');
   await page.setViewportSize({ width: 600, height: 900 });
-  await tcard.locator('.lorerev_view', { hasText: 'Compare' }).click();
+  await tcard.locator('.lorerev_view', { hasText: 'Full Compare' }).click();
   const stacked = await tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').evaluateAll(els => els[1].getBoundingClientRect().top > els[0].getBoundingClientRect().bottom - 2);
   check('O: narrow screen stacks old above new', stacked);
   await tcard.scrollIntoViewIfNeeded();
@@ -370,10 +377,10 @@ try {
   await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
   await edit('Traveler Backstory', 'Edited attempt two.');
   check('P: edit on attempt 2 applies to attempt 2', (await tcard.locator('.lorerev_text').textContent()) === 'Edited attempt two.' && /2\/2/.test(await tcard.locator('.lorerev_pager').textContent()));
-  await tcard.locator('.lorerev_pg', { hasText: '‹' }).click();
+  await tcard.locator('.lorerev_swipe.fa-chevron-left').click();
   check('P: attempt 1 is untouched (still the edited-by-me text, not attempt 2)', (await tcard.locator('.lorerev_text').textContent()) === EDIT);
   await edit('Traveler Backstory', 'Edited attempt one.');
-  await tcard.locator('.lorerev_pg', { hasText: '›' }).click();
+  await tcard.locator('.lorerev_swipe.fa-chevron-right').click();
   check('P: attempt 2 keeps its own edit', (await tcard.locator('.lorerev_text').textContent()) === 'Edited attempt two.');
   // reset to the model's version
   await editBtn('Traveler Backstory').click();
@@ -407,6 +414,7 @@ try {
   await send('Add the bargain with the drowned child to the festival.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 9);
   const fc = card('Festival of Lanterns');
+  await fc.locator('.lorerev_view', { hasText: 'Full Compare' }).click();
   const rows = await fc.locator('.lorerev_cmp > *').evaluateAll(els => els.map(e => e.className.includes('lorerev_col_title') ? 'head' : e.className.includes('lorerev_same') ? 'same' : (e.querySelector('.lorerev_para_del') ? 'del' : '') + (e.querySelector('.lorerev_para_ins') ? 'ins' : '')));
   check('Q: compare = same, [added block only], same (nothing marked removed)', rows.join(',') === 'head,same,ins,same', rows.join(','));
   check('Q: the inserted paragraph is exactly one added block; no removed blocks anywhere', (await fc.locator('.lorerev_para_ins').count()) === 1 && (await fc.locator('.lorerev_para_del').count()) === 0 && (await fc.locator('.lorerev_para_ins').textContent()) === FEST_NEW);
@@ -419,7 +427,7 @@ try {
   await fc.locator('.lorerev_view', { hasText: /^Changes$/ }).click();
   const chOrder = await fc.locator('.lorerev_blk').evaluateAll(els => els.map(e => e.className.replace(/.*lorerev_blk_/, '')).join(','));
   check('Q: Changes view = unchanged (dim), added, unchanged (dim)', chOrder === 'same,ins,same', chOrder);
-  await fc.locator('.lorerev_view', { hasText: /^Compare$/ }).click();
+  await fc.locator('.lorerev_view', { hasText: /^Full Compare$/ }).click();
   await fc.scrollIntoViewIfNeeded();
   await shot('31-mid-insertion-compare.png');
   await fc.locator('.lorerev_view', { hasText: /^Old$/ }).click();
@@ -560,9 +568,9 @@ try {
   check('V: request text is sent in <regeneration_request>, both lines', /<regeneration_request>[\s\S]*Make it shorter\.\nMention the gold marks\.[\s\S]*<\/regeneration_request>/.test(vu));
   check('V: regenerate uses the CURRENT intensity (Heavy-handed)', /## Rewrite intensity: Heavy-handed\nHEAVY-HANDED\./.test(v1.messages[0].content) && !/LIGHT TOUCH\./.test(v1.messages[0].content));
   check('V: box is cleared after use; attempt 2 remembers request + intensity', (await cur.locator('.lorerev_regen_text').inputValue()) === '' && (await cur.locator('.lorerev_attempt_info').textContent()).includes('Make it shorter.') && /Heavy-handed/.test(await cur.locator('.lorerev_attempt_info').textContent()));
-  await cur.locator('.lorerev_pg', { hasText: '‹' }).click();
+  await cur.locator('.lorerev_swipe.fa-chevron-left').click();
   check('V: attempt 1 has no request, shows its own intensity', !/Your request/.test(await cur.textContent()) && /Light touch/.test(await cur.locator('.lorerev_attempt_info').textContent()));
-  await cur.locator('.lorerev_pg', { hasText: '›' }).click();
+  await cur.locator('.lorerev_swipe.fa-chevron-right').click();
   await shot('36-regen-request-remembered.png');
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Third."}]' }]);
@@ -662,7 +670,7 @@ try {
   await card('Currency').locator('.lorerev_btn_regen').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
   check('Y: regenerate uses the current change type', /## Change type: Development\nDEVELOPMENT\./.test(await sysOf()) && /Change type: Development/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
-  await card('Currency').locator('.lorerev_pg', { hasText: '‹' }).click();
+  await card('Currency').locator('.lorerev_swipe.fa-chevron-left').click();
   check('Y: attempt 1 keeps the type it was made with', /Change type: Retcon/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
   // editable wording + Restore default
   await page.selectOption('#lorerev_changetype', 'retcon');

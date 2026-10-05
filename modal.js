@@ -339,8 +339,9 @@ export async function openModal() {
         }
         for (const m of conversation) {
             if (m.role === 'session') {
-                m.session.$el ??= renderSession(m.session, {});
-                $chat.append(m.session.$el);
+                // Re-render from state every time: cached DOM can lose its handlers when the popup closes,
+                // and item.index / item.ui live on the session, so the card reopens on the attempt you were on.
+                $chat.append(renderSession(m.session, { refresh: () => redraw({ keepScroll: true }) }));
                 continue;
             }
             const $m = $('<div class="lorerev_msg">').addClass(`lorerev_${m.role}`).text(m.text);
