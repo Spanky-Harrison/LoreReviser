@@ -46,6 +46,7 @@
 /* ---------- milestone 3: header inputs, messages ---------- */
 .lorerev_header input[type="number"] { width: 80px; }
 .lorerev_msg.lorerev_warn { background: rgba(190, 140, 20, 0.35); border: 1px solid #c9a227; max-width: 100%; }
+.lorerev_msg.lorerev_info { background: rgba(70, 130, 220, 0.18); border: 1px solid rgba(70, 130, 220, 0.5); max-width: 100%; font-size: 0.9em; }
 .lorerev_msg.lorerev_loading { background: var(--SmartThemeBotMesBlurTintColor); display: flex; align-items: center; gap: 8px; }
 .lorerev_cancel { margin-left: auto; }
 #lorerev_send.disabled { opacity: 0.5; pointer-events: none; }

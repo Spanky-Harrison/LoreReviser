@@ -286,6 +286,10 @@ export async function openModal() {
                 toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
                 conversation.splice(-1, 0, { role: 'warn', text: warn });
             }
+            const nDup = session.context.loreRemoved.length;
+            if (nDup) {
+                conversation.splice(-1, 0, { role: 'info', text: `${nDup} selected ${nDup === 1 ? 'entry was' : 'entries were'} already active in the current lore; sent once, in full, with the entries to revise (not repeated in the active lore).` });
+            }
             if (session.context.loreBudgetHit) {
                 // Informational: the active-lore part of the prompt is what ST itself would send (cut off by its World Info budget).
                 conversation.splice(-1, 0, { role: 'warn', text: 'Note: SillyTavern\'s World Info budget was reached while working out the currently active lore, so the "active lore" part of the prompt is cut off, exactly as it would be in a normal chat message. The entries you selected are always sent in full. (This is not an error.)' });

@@ -23,7 +23,8 @@ await post('/api/worldinfo/edit', { name: 'Eldoria Extras', data: book(
   entry(1, 'Harbor Guild', ['guild', 'harbor'], 'Controls trade.')) });
 await post('/api/worldinfo/edit', { name: 'Global Lore', data: book(
   entry(0, 'Magic System', ['magic'], 'Magic is drawn from lanterns.'),
-  entry(1, 'Currency', ['coin', 'gold'], 'Silver crowns.', { constant: true })) });
+  entry(1, 'Currency', ['coin', 'gold'], 'Silver crowns.', { constant: true }),
+  entry(2, 'Moon Calendar', ['moon'], 'The moon festival falls on the third full moon.', { constant: true })) });
 await post('/api/worldinfo/edit', { name: 'Chat Lore', data: book(
   entry(0, 'The Missing Heir', ['heir'], 'Prince Aldric vanished last winter.'),
   entry(1, 'Secret Passage', ['passage'], '@@activate\nBehind the throne. {{user}} knows the way.', { keysecondary: ['throne'] })) });

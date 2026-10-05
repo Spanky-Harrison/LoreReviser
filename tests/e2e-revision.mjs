@@ -16,7 +16,8 @@ const fake = {
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'], headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
-  const sentLogs = [];
+  const sentLogs = [], removedLogs = [];
+  page.on('console', m => { if (/removed from active lore:/.test(m.text()) && !/entries requested/.test(m.text())) removedLogs.push(m.text()); });
   page.on('console', m => { if (/\[LoreReviser\] entries requested/.test(m.text())) sentLogs.push(m.text()); });
   page.on('pageerror', e => { console.log('[pageerror]', e.message); failures++; });
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|status of 500/.test(m.text())) console.log('[console error]', m.text().slice(0, 200)); });
@@ -300,7 +301,7 @@ try {
   const nIds = [...nreq.matchAll(/<entry id="(E\d+)"/g)].map(m => m[1]);
   check('N: with the WI budget at its minimum every selected entry is still sent in full', selectedCount > 0 && nIds.length === selectedCount && nreq.includes('Stern but fair monarch, 54 years old.') && nreq.includes('Prince Aldric vanished last winter.') && nreq.includes('Behind the throne.'), `${selectedCount} selected, ${nIds.length} sent`);
   check('N: ...while the active-lore block is what the budget empties (constant entry gone from <active_lore>)', !nreq.includes('Silver crowns'));
-  check('N: console log shows requested == sent', (() => { const m = (sentLogs.at(-1) ?? '').match(/requested: (\S+); entries in prompt: (\S+)/); return !!m && m[1] === m[2]; })(), sentLogs.at(-1));
+  check('N: console log shows requested == sent', (() => { const m = (sentLogs.at(-1) ?? '').match(/requested: ([^;\s]+); entries in prompt: ([^;\s]+)/); return !!m && m[1] === m[2]; })(), sentLogs.at(-1));
   await shot('24-lore-budget-note.png');
   // with the alert off and a normal budget there is no note
   await page.evaluate(() => { $('#world_info_overflow_alert').prop('checked', false).trigger('change'); $('#world_info_budget_cap').val(0).trigger('input'); });
@@ -466,6 +467,66 @@ try {
   check('S: depth 0 still sends the whole visible chat', /<chat_history messages="8 of 8">/.test(sz) && sz.includes('Message number 1') && sz.includes('Message number 8') && !sz.includes('hidden message'));
   // stored setting survives
   check('S: depth setting stored as -1 after toggling back and forth', await (async () => { await page.fill('#lorerev_depth', '-1'); return (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.depth)) === -1; })());
+
+  // ================= T. selected entries that are also active are sent once =================
+  for (const cb of await page.locator('.lorerev_book_check').all()) { await cb.check(); await cb.uncheck(); } // clear the selection
+  const loreBlock = (u) => u.slice(u.indexOf('<active_lore>'), u.indexOf('</active_lore>'));
+  const reviseBlock = (u) => u.slice(u.indexOf('<entries_to_revise>'), u.indexOf('</entries_to_revise>'));
+  const count = (hay, needle) => hay.split(needle).length - 1;
+  const infoCount = () => page.locator('.lorerev_msg.lorerev_info').count();
+  const infosBefore = await infoCount();
+
+  // T1: Currency (selected + active), The Missing Heir (only selected: its key is never triggered); Moon Calendar stays only active.
+  // (In this test chat the active lore is: both Global constants, Queen Maren, Festival of Lanterns, Secret Passage.)
+  await pick('Global Lore', ['Currency']);
+  await pick('Chat Lore', ['The Missing Heir']);
+  await fake.reset();
+  await fake.queue([{ content: '[]' }]);
+  await send('T1: nothing to change, just checking the prompt.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 13);
+  const t1 = userMsg(await lastReq());
+  check('T1: selected+active entry is NOT in <active_lore>', !loreBlock(t1).includes('Silver crowns.'));
+  check('T1: ...and appears exactly once in the whole prompt, in full, in <entries_to_revise>', count(t1, 'Silver crowns.') === 1 && reviseBlock(t1).includes('Silver crowns.'));
+  check('T1: only-active entry stays in <active_lore>, untouched', loreBlock(t1).includes('The moon festival falls on the third full moon.') && !reviseBlock(t1).includes('moon festival'));
+  check('T1: only-selected entry is just in <entries_to_revise>', count(t1, 'Prince Aldric vanished last winter.') === 1 && reviseBlock(t1).includes('Prince Aldric'));
+  check('T1: other active entries that were not selected are untouched (Queen Maren, Secret Passage, Festival)', loreBlock(t1).includes('Stern but fair monarch') && loreBlock(t1).includes('Behind the throne.') && loreBlock(t1).includes('Festival of Lanterns is held'));
+  check('T1: modal note says 1 entry was already active, sent once', (await infoCount()) === infosBefore + 1 && /1 selected entry was already active/.test(await page.locator('.lorerev_msg.lorerev_info').last().textContent()));
+  check('T1: sent-ids log mentions the de-duplicated entry and nothing left duplicated', /already active, sent once \(removed from active lore\): E\d; still also in active lore: -/.test(sentLogs.at(-1) ?? ''), sentLogs.at(-1));
+  await shot('33-already-active-note.png');
+
+  // T2: only-selected entry alone -> no note, nothing removed
+  for (const cb of await page.locator('.lorerev_book_check').all()) { await cb.check(); await cb.uncheck(); }
+  await pick('Chat Lore', ['The Missing Heir']);
+  await fake.reset();
+  await fake.queue([{ content: '[]' }]);
+  await send('T2: only a non-active entry.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 14);
+  const t2 = userMsg(await lastReq());
+  check('T2: both constant entries stay in the active lore, no note', loreBlock(t2).includes('Silver crowns.') && loreBlock(t2).includes('moon festival') && (await infoCount()) === infosBefore + 1);
+  check('T2: log shows none removed', /sent once \(removed from active lore\): -;/.test(sentLogs.at(-1) ?? ''), sentLogs.at(-1));
+
+  // T3: EVERY active entry is selected -> the active lore is empty
+  for (const cb of await page.locator('.lorerev_book_check').all()) { await cb.check(); await cb.uncheck(); }
+  await pick('Global Lore', ['Currency', 'Moon Calendar']);
+  await pick('Eldoria', ['Queen Maren']);
+  await pick('Persona Lore', ['Festival of Lanterns']);
+  await pick('Chat Lore', ['Secret Passage']);
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }]);
+  await send('T3: every active entry selected; change the currency.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 15);
+  const t3 = userMsg(await lastReq());
+  check('T3: active lore is empty -> "(none active)"', /<active_lore>\n\(none active\)\n<\/active_lore>/.test(t3), loreBlock(t3));
+  check('T3: each entry once, in full, in <entries_to_revise>; note says 5', count(t3, 'Silver crowns.') === 1 && count(t3, 'third full moon.') === 1 && count(t3, 'Behind the throne.') === 1 && count(t3, 'Festival of Lanterns is held') === 1 && /5 selected entries were already active/.test(await page.locator('.lorerev_msg.lorerev_info').last().textContent()));
+  check('T3: matched by book+uid from the scan, not by guessing (also the entry whose @@decorator line the scan strips)', /matched by uid/.test(removedLogs.at(-1) ?? '') && !/matched by content/.test(removedLogs.at(-1) ?? ''), removedLogs.at(-1));
+  // regenerate Currency: the request only lists Currency, so Moon Calendar (not part of it) reappears as lore
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns, gold marks and copper bits."}]' }]);
+  await card('Currency').locator('.menu_button', { hasText: 'Regenerate…' }).click();
+  await card('Currency').locator('.lorerev_regen .menu_button').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
+  const t4 = userMsg(await lastReq());
+  check('T3: regenerate lists only Currency (once), keeps it out of the lore, and shows the entries not in this request as lore again', (t4.match(/<entry id=/g) ?? []).length === 1 && !loreBlock(t4).includes('Silver crowns') && loreBlock(t4).includes('third full moon.') && loreBlock(t4).includes('Stern but fair monarch') && count(t4, 'Silver crowns.') === 1);
 
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
 } catch (e) {
