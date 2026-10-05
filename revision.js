@@ -144,7 +144,7 @@ function readReply(session, info) {
 export async function prepareSession({ profile, settings, selection, instruction }) {
     const items = await loadSelectedEntries(selection);
     if (!items.length) throw new Error('None of the selected entries could be loaded (were they deleted?).');
-    const context = await gatherContext(settings.depth);
+    const context = await gatherContext(settings.depth, items);
     const maxTokens = await resolveReplyTokens(settings, items);
     const session = {
         id: Date.now(), instruction, profile: { id: profile.id, name: profile.name },
@@ -154,7 +154,10 @@ export async function prepareSession({ profile, settings, selection, instruction
     for (const it of items) Object.assign(it, { attempts: [], index: -1, status: 'unchanged', error: null });
     const messages = buildMessages({ systemPrompt: session.systemPrompt, context, items, instruction });
     const check = verifyEntriesSent(items, messages);
-    console.info(`[LoreReviser] entries requested: ${check.requested.join(',')}; entries in prompt: ${check.sent.join(',')}`);
+    const dupes = context.loreRemoved.map(x => x.id);
+    console.info(`[LoreReviser] entries requested: ${check.requested.join(',')}; entries in prompt: ${check.sent.join(',')}; already active, sent once (removed from active lore): ${dupes.join(',') || '-'}; still also in active lore: ${check.alsoInLore.join(',') || '-'}`);
+    if (context.loreRemoved.length) console.info('[LoreReviser] removed from active lore:', context.loreRemoved.map(x => `${x.id} (${x.from}, matched by ${x.via})`).join('; '));
+    if (context.loreNotFound.length) console.warn(`[LoreReviser] active selected entries whose text could not be located in the active lore, left as is: ${context.loreNotFound.join(',')}`);
     if (check.missing.length) throw new Error(`Internal error: entries ${check.missing.join(', ')} are not in the prompt. Nothing was sent.`);
     session.entriesSent = check.sent;
     const promptTokens = await countTokens(messages);

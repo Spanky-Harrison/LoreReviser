@@ -1,6 +1,8 @@
 // Unit tests for the pure modules (parse.js, diff.js). Run: node tests/unit.mjs
 import assert from 'node:assert/strict';
 import { parseRevisionReply as P, integrityWarnings as W, sameAsOriginal } from '../parse.js';
+import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
+import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
 
 let n = 0;
@@ -95,5 +97,64 @@ t('truncated repaired text with raw newlines still salvages complete entries', (
 t('skipped object reports its id so only that entry is flagged', () => {
     const r = P('[{"id":"E1","content":"ok"},{"id":"E2","content": broken },{"id":"E3","content":"ok"}]');
     assert.equal(r.entries.length, 2); assert.equal(r.skipped, 1); assert.deepEqual(r.skippedIds, ['E2']); assert.equal(r.truncated, false);
+});
+t('normalizeDepth: -1 allowed, below -1 clamps, 0 stays, junk -> 0', () => {
+    assert.equal(normalizeDepth(-1), -1); assert.equal(normalizeDepth(-5), -1); assert.equal(normalizeDepth(0), 0);
+    assert.equal(normalizeDepth('3'), 3); assert.equal(normalizeDepth(2.7), 2); assert.equal(normalizeDepth(-0.5), -1);
+    assert.equal(normalizeDepth(''), 0); assert.equal(normalizeDepth(undefined), 0); assert.equal(normalizeDepth('abc'), 0); assert.equal(normalizeDepth(null), 0);
+});
+t('sliceByDepth: -1 = none, 0 = all, N = last N (also when N > length)', () => {
+    const m = ['a', 'b', 'c', 'd'];
+    assert.deepEqual(sliceByDepth(m, -1), []); assert.deepEqual(sliceByDepth(m, 0), m); assert.deepEqual(sliceByDepth(m, 2), ['c', 'd']);
+    assert.deepEqual(sliceByDepth(m, 10), m); assert.deepEqual(sliceByDepth(m, -7), []); assert.deepEqual(sliceByDepth([], -1), []);
+    assert.notEqual(sliceByDepth(m, 0), m); // a copy
+});
+t('depthLabel', () => {
+    assert.equal(depthLabel(-1, 8), 'No chat will be sent'); assert.equal(depthLabel(0, 8), '8 of 8 messages will be sent');
+    assert.equal(depthLabel(3, 8), '3 of 8 messages will be sent'); assert.equal(depthLabel(20, 8), '8 of 8 messages will be sent');
+});
+const L = (before, after = '', lists = []) => ({ before, after, lists });
+t('removeBlock: first, middle, last and only block; newlines stay tidy', () => {
+    assert.deepEqual(removeBlock('A\nB\nC', 'A'), { text: 'B\nC', removed: true });
+    assert.deepEqual(removeBlock('A\nB\nC', 'B'), { text: 'A\nC', removed: true });
+    assert.deepEqual(removeBlock('A\nB\nC', 'C'), { text: 'A\nB', removed: true });
+    assert.deepEqual(removeBlock('A', 'A'), { text: '', removed: true });
+    assert.deepEqual(removeBlock('', 'A'), { text: '', removed: false });
+});
+t('removeBlock: multi-line entry text; never a part of a line or of another entry', () => {
+    assert.deepEqual(removeBlock('one\ntwo\nlines\nlast', 'two\nlines'), { text: 'one\nlast', removed: true });
+    assert.deepEqual(removeBlock('Silver crowns and gold\nx', 'Silver crowns'), { text: 'Silver crowns and gold\nx', removed: false });
+    assert.deepEqual(removeBlock('prefix Silver crowns', 'Silver crowns'), { text: 'prefix Silver crowns', removed: false });
+    assert.deepEqual(removeBlock('xx Silver\nSilver', 'Silver'), { text: 'xx Silver', removed: true }); // skips the non-standalone first hit
+});
+const cand = (id, ...texts) => ({ id, texts: texts.map(t => (typeof t === 'string' ? { text: t, via: 'uid' } : t)) });
+t('dedupe: selected+active removed from before; only-active and only-selected untouched', () => {
+    const src = L('Lore A\nLore B\nLore C');
+    // E1 selected+active (B); E2 selected but not active -> no candidate at all (caller skips it)
+    const r = dedupeLore(src, [cand('E1', 'Lore B')]);
+    assert.equal(r.src.before, 'Lore A\nLore C'); assert.deepEqual(r.removed, [{ id: 'E1', from: 'before', via: 'uid' }]); assert.deepEqual(r.notFound, []);
+    assert.equal(src.before, 'Lore A\nLore B\nLore C'); // input not mutated
+});
+t('dedupe: all positions (after, depth list, AN, outlet) and the assembled order', () => {
+    const src = L('B1', 'A1\nA2', [{ label: 'depth 4', items: ['D1', 'D2'] }, { label: "author's note top", items: ['N1'] }, { label: 'outlet x', items: ['O1'] }]);
+    const r = dedupeLore(src, [cand('E1', 'A2'), cand('E2', 'D1'), cand('E3', 'N1'), cand('E4', 'O1'), cand('E5', 'B1')]);
+    assert.deepEqual(r.removed.map(x => `${x.id}:${x.from}`), ['E1:after', 'E2:depth 4', 'E3:author\'s note top', 'E4:outlet x', 'E5:before']);
+    assert.equal(assembleLore(r.src), 'A1\n\nD2');
+});
+t('dedupe: empty active lore after removing everything; and empty source', () => {
+    assert.equal(assembleLore(dedupeLore(L('Only'), [cand('E1', 'Only')]).src), '');
+    const r = dedupeLore(L(''), [{ ...cand('E1', 'x'), optional: true }]);
+    assert.deepEqual(r.removed, []); assert.deepEqual(r.notFound, []); assert.equal(assembleLore(r.src), '');
+});
+t('dedupe: fallback text order (scan text first, then stored content), reports via and not-found', () => {
+    const r = dedupeLore(L('stored text'), [cand('E1', { text: 'rendered by regex', via: 'uid' }, { text: 'stored text', via: 'content' })]);
+    assert.deepEqual(r.removed, [{ id: 'E1', from: 'before', via: 'content' }]);
+    const nf = dedupeLore(L('something else'), [cand('E2', 'gone')]);
+    assert.deepEqual(nf.notFound, ['E2']); assert.equal(nf.src.before, 'something else');
+});
+t('dedupe: identical text twice in the lore -> only one occurrence per selected entry is removed', () => {
+    const r = dedupeLore(L('Same\nSame'), [cand('E1', 'Same')]);
+    assert.equal(r.src.before, 'Same');
+    assert.equal(dedupeLore(L('Same\nSame'), [cand('E1', 'Same'), cand('E2', 'Same')]).src.before, '');
 });
 console.log(`${n} unit tests passed`);

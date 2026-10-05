@@ -4,7 +4,7 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 
 ## Decisions so far
 - One big model call per revision run, covering all selected entries. If the model gets confused, the user shortens the selection.
-- A **depth** setting limits how many recent chat messages are sent (default: whole chat).
+- A **depth** setting limits how many recent chat messages are sent (default `0` = whole chat; `-1` = no chat at all).
 - Archive is plain JSON files, one per lorebook, not a hidden database.
 - Revisions cover entry content **and keys** (add/revise primary and secondary keys).
 - Creating **new entries** is a separate function from revision, with its own command and review step. Deletion is not included.
@@ -16,7 +16,7 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 3. **Sidebar** listing only lorebooks linked to the current chat (global, character, chat, persona). Checkboxes for whole books or single entries. Books expand and collapse to show entries.
 4. **Input box** takes instructions on what information to use to edit the lore. Sending starts the revision.
 5. **Revision process**: one request to the chosen profile, **with the prompt built by the extension itself** (not captured from a real send, and not `generateQuietPrompt`, which always uses the main connection). It contains
-   - the chat history (last X non-hidden messages, from the depth setting),
+   - the chat history (last X non-hidden messages, from the depth setting; block kept but marked "no chat history provided" at depth -1),
    - character information (`getCharacterCardFields()`),
    - currently active lore (`getWorldInfoPrompt(..., dryRun = true)`), close to a normal send but not byte-identical,
    - the full content and keys of every selected book/entry,
