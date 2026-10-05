@@ -19,6 +19,8 @@ try {
   const sentLogs = [], removedLogs = [];
   page.on('console', m => { if (/removed from active lore:/.test(m.text()) && !/entries requested/.test(m.text())) removedLogs.push(m.text()); });
   page.on('console', m => { if (/\[LoreReviser\] entries requested/.test(m.text())) sentLogs.push(m.text()); });
+  const wiLogs = [];
+  page.on('console', m => { if (/\[LoreReviser\] WI scan:/.test(m.text())) wiLogs.push(m.text()); });
   page.on('pageerror', e => { console.log('[pageerror]', e.message); failures++; });
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|status of 500/.test(m.text())) console.log('[console error]', m.text().slice(0, 200)); });
   await page.goto('http://localhost:8766/');
@@ -249,7 +251,8 @@ try {
   await send('Check the size warning.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 5);
   const warnText = await page.locator('.lorerev_msg.lorerev_warn').last().textContent();
-  check('L: size warning shown but request still sent', /may not fit/.test(warnText) && (await fake.requests()).length === 1, warnText);
+  const sizeWarn = (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'may not fit' }).allTextContents()).at(-1) ?? '';
+  check('L: size warning shown but request still sent', /may not fit/.test(sizeWarn) && (await fake.requests()).length === 1, warnText);
   check('L: reply tokens setting used', (await lastReq()).max_tokens === 777);
   await page.screenshot({ path: `${SHOTS}/23-token-warning.png` });
   await page.fill('#lorerev_context', '0'); await page.fill('#lorerev_reply', '0');
@@ -305,10 +308,10 @@ try {
   await page.evaluate(() => { $('#world_info_overflow_alert').prop('checked', false).trigger('change'); $('#world_info_budget_cap').val(0).trigger('input'); });
   await fake.reset();
   await fake.queue([{ content: '[]' }]);
-  const warnsBefore = await page.locator('.lorerev_msg.lorerev_warn').count();
+  const budgetNotesBefore = await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count();
   await send('No budget issue now.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 7);
-  check('N: no note when the budget is fine', (await page.locator('.lorerev_msg.lorerev_warn').count()) === warnsBefore);
+  check('N: no note when the budget is fine', (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count()) === budgetNotesBefore);
 
   // ================= O. block-level views with realistic multi-sentence text =================
   await pick('Persona Lore', ['Traveler Backstory']);
@@ -681,6 +684,75 @@ try {
   await page.selectOption('#lorerev_changetype', 'development');
 
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
+  // ================= Z. WI budget: the PROFILE's context (not ST's Text Completion slider), note only on a real cut =================
+  // Bug: ctx.maxContext is only the Text Completion context slider. A Chat Completion user with 262144 context and a 50%
+  // budget got budget = 50% of the slider value, so a modest lorebook "overflowed" and the note appeared.
+  await page.fill('#lorerev_context', '0');
+  // a modest lorebook: one extra constant entry of a few hundred tokens (restored at the end)
+  const LONG = Array.from({ length: 40 }, (_, i) => `In year ${i + 1} of the old calendar the river guilds kept their records in the archive.`).join(' ');
+  await page.evaluate(async (long) => {
+    const c = SillyTavern.getContext();
+    const data = await c.loadWorldInfo('Global Lore'); window.__zBook = structuredClone(data);
+    data.entries[9] = { ...structuredClone(data.entries[1]), uid: 9, comment: 'Archive History', key: ['archive'], content: long, constant: true, displayIndex: 9 };
+    await c.saveWorldInfo('Global Lore', data, true);
+  }, LONG);
+  const setCC = () => page.evaluate(() => { const c = SillyTavern.getContext(); c.chatCompletionSettings.openai_max_context = 262144; c.chatCompletionSettings.openai_max_tokens = 300; });
+  await page.evaluate(() => {
+    const c = SillyTavern.getContext();
+    window.__z = { tc: $('#max_context').val(), pct: $('#world_info_budget').val(), cap: $('#world_info_budget_cap').val(), cc: c.chatCompletionSettings.openai_max_context, mt: c.chatCompletionSettings.openai_max_tokens };
+    $('#max_context').val(512).trigger('input');
+    $('#world_info_budget').val(50).trigger('input');
+    $('#world_info_budget_cap').val(0).trigger('input');
+    c.chatCompletionSettings.openai_max_context = 262144;
+    c.chatCompletionSettings.openai_max_tokens = 300;
+  });
+  const control = await page.evaluate(async () => {
+    const wi = await import('/scripts/world-info.js'); const c = SillyTavern.getContext();
+    let over = false; const on = (a) => { if (a?.budget?.overflowed) over = true; };
+    c.eventSource.on(c.eventTypes.WORLDINFO_SCAN_DONE, on);
+    const realW = toastr.warning; toastr.warning = () => {};
+    try { await wi.checkWorldInfo(c.chat.filter(m => !m.is_system).map(m => `${m.name}: ${m.mes}`).reverse(), c.maxContext, true, {}); } finally { toastr.warning = realW; c.eventSource.removeListener(c.eventTypes.WORLDINFO_SCAN_DONE, on); }
+    return { maxContext: c.maxContext, over, pct: wi.world_info_budget };
+  });
+  check('Z: repro - the old call (ctx.maxContext = Text Completion slider) overflows a modest lorebook at 50%', control.maxContext === 512 && control.pct === 50 && control.over, JSON.stringify(control));
+  const zSess = await page.locator('.lorerev_session').count();
+  const zWarns = await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count();
+  wiLogs.length = 0;
+  await fake.reset(); await fake.queue([{ content: '[]' }]);
+  await setCC();
+  await send('Z: budget with a big Chat Completion context.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 1, zSess);
+  check('Z: scan uses the profile\'s Chat Completion context minus response length', /context 262144 \(your current Chat Completion settings\) - response 300 = 261844; budget 50% = 130922 tokens/.test(wiLogs.at(-1) ?? '') && /overflowed: false/.test(wiLogs.at(-1) ?? ''), wiLogs.at(-1));
+  check('Z: no budget note with 262144 context and 50% budget', (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count()) === zWarns);
+  check('Z: active lore is complete (the long constant entry is in it)', userMsg(await lastReq()).includes(LONG));
+  // a real cut: cap the budget; the note gives the numbers, the cap and where the context came from, and names what was cut
+  await page.evaluate(() => $('#world_info_budget_cap').val(12).trigger('input'));
+  wiLogs.length = 0;
+  await fake.reset(); await fake.queue([{ content: '[]' }]);
+  await setCC();
+  await send('Z: with a budget cap.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 2, zSess);
+  const zNote = (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).allTextContents()).at(-1) ?? '';
+  check('Z: real cut -> note with used/allowed tokens, the cap and the context source', /World Info budget was reached/.test(zNote) && /about \d+ of 12 tokens used/.test(zNote) && /capped at 12 tokens by your "Budget Cap" setting/.test(zNote) && /context 262144 from your current Chat Completion settings, minus 300 response tokens/.test(zNote) && /It left out \d+ (entry|entries)/.test(zNote), zNote);
+  console.log('Z note:', zNote);
+  await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).last().scrollIntoViewIfNeeded();
+  await page.evaluate(() => { const ch = document.querySelector('#lorerev_chat'); const n = [...ch.querySelectorAll('.lorerev_msg.lorerev_warn')].filter(m => /World Info budget/.test(m.textContent)).at(-1); ch.scrollTop = n.offsetTop - ch.offsetTop - 40; });
+  await shot('43-budget-note-numbers.png');
+  // the user's Context box wins
+  await page.evaluate(() => $('#world_info_budget_cap').val(0).trigger('input'));
+  await page.fill('#lorerev_context', '1000');
+  wiLogs.length = 0;
+  await fake.reset(); await fake.queue([{ content: '[]' }]);
+  await setCC();
+  await send('Z: with the Context box.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 3, zSess);
+  check('Z: the "Context" box overrides the context used for the budget', /context 1000 \(your "Context" box in LoreReviser\) - response 300 = 700; budget 50% = 350 tokens/.test(wiLogs.at(-1) ?? ''), wiLogs.at(-1));
+  await page.fill('#lorerev_context', '0');
+  await page.evaluate(() => { const z = window.__z, c = SillyTavern.getContext();
+    $('#max_context').val(z.tc).trigger('input'); $('#world_info_budget').val(z.pct).trigger('input'); $('#world_info_budget_cap').val(z.cap).trigger('input');
+    c.chatCompletionSettings.openai_max_context = z.cc; c.chatCompletionSettings.openai_max_tokens = z.mt; });
+  await page.evaluate(async () => SillyTavern.getContext().saveWorldInfo('Global Lore', window.__zBook, true));
+
 } catch (e) {
   console.log('TEST ERROR', e); failures++;
   try { const pg = browser.contexts()[0].pages()[0]; console.log('TOASTS:', await pg.locator('.toast-message').allTextContents()); console.log('LAST SESSION:', (await pg.locator('.lorerev_session').last().textContent()).slice(0, 1500)); await pg.screenshot({ path: `${SHOTS}/zz-failure.png` }); } catch {}

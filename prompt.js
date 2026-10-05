@@ -7,6 +7,8 @@
 
 import { loadWorldInfo, getWorldInfoPrompt } from '../../../world-info.js';
 import * as worldInfo from '../../../world-info.js';
+import * as stScript from '../../../../script.js';
+import { wiBudget, wiScanContext } from './budget.js';
 import * as regexEngine from '../../regex/engine.js';
 import { normalizeDepth, sliceByDepth } from './depth.js';
 import { dedupeLore, assembleLore } from './dedupe.js';
@@ -47,8 +49,10 @@ export async function loadSelectedEntries(selection) {
  * Collects the parts of the prompt that do not depend on which entries are revised.
  * Computed once per Send and reused for regenerations.
  * @param {number} depth last X visible chat messages; 0 = all; -1 = no chat history at all
+ * @param {object[]} items the selected entries
+ * @param {{limit:number, source:string, response:number}} [ctxInfo] context size for the World Info scan (resolveContextLimit)
  */
-export async function gatherContext(depth, items = []) {
+export async function gatherContext(depth, items = [], ctxInfo = null) {
     const ctx = SillyTavern.getContext();
     const visible = ctx.chat.filter(m => !m.is_system); // hidden messages are not part of a normal prompt either
     const shown = sliceByDepth(visible, depth);
@@ -69,13 +73,32 @@ export async function gatherContext(depth, items = []) {
 
     // Lore that would be active in a normal send. Dry run: no timed-effect changes, no events.
     // The scan input is newest-first, like Generate() builds it.
-    let loreBudgetHit = false;
+    // The WI scan gets the same maxContext ST's Generate() would use for this connection: context - response length.
+    // (ctx.maxContext is only the Text Completion slider; with Chat Completion it is NOT the real context size.)
+    const info = ctxInfo ?? resolveContextLimit(null, { contextLimit: 0 });
+    const scanContext = wiScanContext(info.limit, info.response);
+    const percent = Number(worldInfo.world_info_budget ?? 25), cap = Number(worldInfo.world_info_budget_cap ?? 0);
+    const expectedBudget = wiBudget(percent, scanContext, cap);
     let loreSource = null, loreActivated = null;
+    // Budget facts from the scan-done event(s) of OUR scan (matched by the budget value; ST may scan for itself meanwhile).
+    // ST sets budget.overflowed as soon as one entry does not fit; that entry and the rest of that loop are left out.
+    // Entries that passed the checks but are not in activated.entries are the ones the budget really cut.
+    let overflowed = false, ourScan = false;
+    const cutKeys = new Map();
     // ST shows a "World info budget reached" toast from inside the scan whenever the user has "Alert On Overflow" on,
     // even for a dry run. That toast would look like a LoreReviser error, so hide exactly that one message while we
     // scan and read the real answer from the scan-done event instead (budget.overflowed). Always restored in `finally`.
     const realWarning = toastr.warning;
-    const onScanDone = (args) => { if (args?.budget?.overflowed) loreBudgetHit = true; };
+    const onScanDone = (args) => {
+        if (!ourScan || Number(args?.budget?.current) !== expectedBudget) return;
+        if (!args.budget.overflowed) return;
+        overflowed = true;
+        const active = args.activated?.entries;
+        for (const e of args.new?.successful ?? []) {
+            const k = `${e.world}.${e.uid}`;
+            if (!e.ignoreBudget && !(active?.has?.(k))) cutKeys.set(k, e);
+        }
+    };
     try {
         toastr.warning = function (message, title, ...rest) {
             if (typeof message === 'string' && /^World info budget reached/i.test(message)) return undefined;
@@ -92,10 +115,12 @@ export async function gatherContext(depth, items = []) {
         // is what lets us take the selected entries out exactly. Older/newer ST without it: use getWorldInfoPrompt.
         let r, activated = null;
         if (typeof worldInfo.checkWorldInfo === 'function') {
-            r = await worldInfo.checkWorldInfo(scan, ctx.maxContext, true, globalScan);
+            ourScan = true;
+            r = await worldInfo.checkWorldInfo(scan, scanContext, true, globalScan);
             if (r?.allActivatedEntries) activated = new Map([...r.allActivatedEntries].map(e => [`${e.world}.${e.uid}`, e]));
         } else {
-            const w = await getWorldInfoPrompt(scan, ctx.maxContext, true, globalScan);
+            ourScan = true;
+            const w = await getWorldInfoPrompt(scan, scanContext, true, globalScan);
             r = { worldInfoBefore: w.worldInfoBefore, worldInfoAfter: w.worldInfoAfter, WIDepthEntries: w.worldInfoDepth, ANBeforeEntries: w.anBefore, ANAfterEntries: w.anAfter, outletEntries: w.outletEntries };
         }
         loreSource = {
@@ -111,11 +136,25 @@ export async function gatherContext(depth, items = []) {
     } catch (e) {
         console.warn('[LoreReviser] could not compute active lore', e);
     } finally {
+        ourScan = false;
         toastr.warning = realWarning;
         ctx.eventSource.removeListener(ctx.eventTypes.WORLDINFO_SCAN_DONE, onScanDone);
     }
 
-    const context = { card: cardText, loreSource, loreCandidates: [], loreBudgetHit, history, messagesUsed: shown.length, messagesTotal: visible.length, noChat };
+    // Only a real cut counts: entries the budget left out, still active in the end (a later loop may have added them) excluded.
+    const cut = [...cutKeys].filter(([k]) => !loreActivated?.has(k)).map(([, e]) => e);
+    const selectedKeys = new Set(items.map(i => `${i.book}.${i.uid}`));
+    const label = (e) => e.comment?.trim() || e.key?.slice(0, 2).join(', ') || `${e.world} #${e.uid}`;
+    let used = 0;
+    try { used = loreActivated ? await ctx.getTokenCountAsync([...loreActivated.values()].filter(e => !e.ignoreBudget).map(e => e.content).join('\n')) : 0; } catch { /* estimate only */ }
+    const loreBudget = {
+        budget: expectedBudget, used, percent, cap, scanContext, limit: info.limit, response: info.response, source: info.source, overflowed,
+        cut: cut.filter(e => !selectedKeys.has(`${e.world}.${e.uid}`)).map(label),
+        cutSelected: cut.filter(e => selectedKeys.has(`${e.world}.${e.uid}`)).map(label),
+    };
+    console.info(`[LoreReviser] WI scan: context ${info.limit} (${info.source}) - response ${info.response} = ${scanContext}; budget ${percent}%${cap > 0 ? ` cap ${cap}` : ''} = ${expectedBudget} tokens; used ~${used}; overflowed: ${overflowed}; cut: ${cut.map(label).join(', ') || '-'}`);
+    const loreBudgetHit = loreBudget.cut.length > 0; // only when ST really left out lore that is not being revised anyway
+    const context = { card: cardText, loreSource, loreCandidates: [], loreBudgetHit, loreBudget, history, messagesUsed: shown.length, messagesTotal: visible.length, noChat };
     context.loreCandidates = loreCandidatesFor(items, loreActivated, loreSource);
     Object.assign(context, loreFor(context, items));
     return context;
@@ -222,19 +261,31 @@ export async function countTokens(messages) {
 }
 
 /**
- * Context size to compare against: the user's override, else the profile's preset, else the main connection.
- * @returns {{limit: number, source: string}}
+ * Context size of the chosen connection: the user's "Context" box, else the profile's Chat Completion preset, else the
+ * current settings of the API the profile uses (Chat Completion: openai_max_context; Text Completion: the context slider),
+ * else ST's own main-connection value. `response` is the response length ST would subtract for its World Info scan.
+ * Note: ctx.maxContext is ONLY the Text Completion context slider, so it is wrong for Chat Completion connections.
+ * @param {object|null} profile Connection Manager profile (null = main connection)
+ * @returns {{limit: number, source: string, response: number}}
  */
 export function resolveContextLimit(profile, settings) {
     const ctx = SillyTavern.getContext();
-    if (settings.contextLimit > 0) return { limit: settings.contextLimit, source: 'your "Context" setting' };
+    const cc = ctx.chatCompletionSettings ?? {};
+    let isCC = ctx.mainApi === 'openai';
+    try { if (profile) isCC = profile.mode === 'cc' || ctx.CONNECT_API_MAP?.[profile.api]?.selected === 'openai'; } catch { /* keep main */ }
+    let preset = null;
+    try { if (isCC && profile?.preset) preset = ctx.getPresetManager('openai')?.getCompletionPresetByName(profile.preset) ?? null; } catch { /* none */ }
+    const mainResponse = () => { try { return Number(stScript.getMaxResponseTokens?.()) || 0; } catch { return 0; } };
+    const response = isCC ? Number(preset?.openai_max_tokens ?? cc.openai_max_tokens) || 0 : (Number(stScript.amount_gen) || mainResponse());
+    if (settings?.contextLimit > 0) return { limit: settings.contextLimit, source: 'your "Context" box in LoreReviser', response };
+    if (Number(preset?.openai_max_context) > 0) return { limit: Number(preset.openai_max_context), source: `the profile's preset "${profile.preset}"`, response };
+    if (profile && isCC && Number(cc.openai_max_context) > 0) return { limit: Number(cc.openai_max_context), source: 'your current Chat Completion settings', response };
+    if (profile && !isCC && ctx.maxContext > 0) return { limit: ctx.maxContext, source: 'your Text Completion context size', response };
     try {
-        if (ctx.CONNECT_API_MAP[profile.api]?.selected === 'openai' && profile.preset) {
-            const preset = ctx.getPresetManager('openai')?.getCompletionPresetByName(profile.preset);
-            if (preset?.openai_max_context > 0) return { limit: Number(preset.openai_max_context), source: `preset "${profile.preset}"` };
-        }
+        const main = Number(stScript.getMaxContextTokens?.());
+        if (main > 0) return { limit: main, source: 'your main connection', response: mainResponse() };
     } catch { /* fall through */ }
-    return { limit: ctx.maxContext, source: 'your main connection' };
+    return { limit: isCC && cc.openai_max_context > 0 ? Number(cc.openai_max_context) : ctx.maxContext, source: 'your main connection', response };
 }
 
 /** Reply budget: the user's setting, or an estimate from the size of the entries being revised. */
