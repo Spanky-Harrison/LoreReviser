@@ -2,6 +2,7 @@
 // Send builds one prompt (prompt.js), sends it on the chosen profile (revision.js) and shows the proposed
 // changes as review cards (review.js). Approving writes to the lorebook and archives the old version (apply.js,
 // archive.js); History (history.js) shows saved versions with Restore. Orphaned history files can be relinked here.
+// "New entries" mode (create.js) asks the model for new entries in a chosen lorebook and shows them as the same review cards.
 
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { getLinkedBooks } from './lorebooks.js';
@@ -16,6 +17,8 @@ import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rul
 import { openHistory, openHistoryPicker } from './history.js';
 import { getArchiveIndex, relinkArchive } from './archive.js';
 import { findOrphans } from './archive-core.js';
+import { prepareCreateSession, sendCreateSession, loadBookEntries } from './create.js';
+import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, CREATE_RULES_NOTE } from './create-core.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -23,6 +26,12 @@ let conversation = [];
 let redraw = () => {};
 /** Aborts the running Send request, if any. */
 let abortSend = null;
+/** 'revise' (selected entries) or 'create' (new entries). Kept while the page is open. */
+let mode = 'revise';
+/** Last "Copy settings from" choice: { book, uid } (uid null = SillyTavern defaults). */
+let createCopy = { book: '', uid: null };
+/** "Also send its text as a format example" checkbox. */
+let createUseExample = true;
 SillyTavern.getContext().eventSource.on(SillyTavern.getContext().eventTypes.CHAT_CHANGED, () => { conversation = []; });
 
 // ---------- selection (which books/entries are ticked), saved per chat in chat metadata ----------
@@ -119,11 +128,35 @@ const TEMPLATE = `
                 <textarea id="lorerev_rules" class="text_pole" rows="10"></textarea>
                 <div class="menu_button lorerev_restore" id="lorerev_rules_reset" title="Put the original reply format rules back">Restore default</div>
             </details>
+            <details class="lorerev_system" id="lorerev_create_box">
+                <summary>New entry prompt <span class="lorerev_edited" id="lorerev_create_edited"></span></summary>
+                <div class="lorerev_dim">Used instead of the system prompt and reply format rules above when you ask for <b>New entries</b>. The <code>## Change type: &lt;type&gt;</code> section (chosen at the top) is added between them; the rewrite intensity is not used for new entries, because there is no existing text to rewrite.</div>
+                <div class="lorerev_part">
+                    <div class="lorerev_part_head"><b>System prompt for new entries</b> <span class="lorerev_edited" id="lorerev_create_sys_edited"></span>
+                        <div class="menu_button lorerev_restore" id="lorerev_create_sys_reset" title="Put the original new-entry system prompt back">Restore default</div></div>
+                    <textarea id="lorerev_create_sys" class="text_pole" rows="6"></textarea>
+                </div>
+                <div class="lorerev_part">
+                    <div class="lorerev_part_head"><b>Reply format rules for new entries (advanced)</b> <span class="lorerev_edited" id="lorerev_create_rules_edited"></span>
+                        <div class="menu_button lorerev_restore" id="lorerev_create_rules_reset" title="Put the original new-entry reply format rules back">Restore default</div></div>
+                    <div id="lorerev_create_rules_warn" class="lorerev_rules_warn" style="display:none"></div>
+                    <textarea id="lorerev_create_rules" class="text_pole" rows="8"></textarea>
+                </div>
+            </details>
             </div>
             <div id="lorerev_chat" class="lorerev_chat"></div>
             <div class="lorerev_infobar">
                 <div id="lorerev_selected_info" class="lorerev_dim"></div>
                 <div id="lorerev_clear" class="menu_button" title="Remove all messages and review cards from this window. Your settings and selection are kept.">Clear chat</div>
+            </div>
+            <div class="lorerev_modebar">
+                <div class="lorerev_mode" data-mode="revise" title="Revise the entries ticked in the sidebar (content and keys)">Revise selected entries</div>
+                <div class="lorerev_mode" data-mode="create" title="Ask the model for new entries in a lorebook you pick">New entries</div>
+            </div>
+            <div id="lorerev_create_panel" class="lorerev_create_panel">
+                <label title="The lorebook the new entries are created in">Lorebook <select id="lorerev_new_book" class="text_pole"></select></label>
+                <label title="The new entries get all settings of this entry (order, position, depth, probability, groups, filters, ...) except its content, title and keys. None = SillyTavern's defaults.">Copy settings from <select id="lorerev_new_copy" class="text_pole"></select></label>
+                <label class="lorerev_new_example_lbl" title="Send the chosen entry's text to the model so the new entries follow its layout and style (not its facts)"><input type="checkbox" id="lorerev_new_example"> also send its text as a format example</label>
             </div>
             <div class="lorerev_input">
                 <textarea id="lorerev_input" class="text_pole" rows="3"
@@ -262,6 +295,31 @@ export async function openModal() {
     $root.find('#lorerev_rules_reset').on('click', () => $rules.val(DEFAULT_FORMAT_RULES).trigger('input'));
     refreshRules();
 
+    // --- new entry prompt: own system prompt and reply-format rules (same storage rules as above) ---
+    const $cSys = $root.find('#lorerev_create_sys').val(settings.createSystemPrompt);
+    const $cRules = $root.find('#lorerev_create_rules').val(settings.createFormatRules || DEFAULT_CREATE_FORMAT_RULES);
+    const $cRulesWarn = $root.find('#lorerev_create_rules_warn');
+    const refreshCreateMarks = () => {
+        const sysEdited = settings.createSystemPrompt.trim() !== DEFAULT_CREATE_SYSTEM_PROMPT.trim();
+        markEdited($root.find('#lorerev_create_sys_edited'), sysEdited);
+        markEdited($root.find('#lorerev_create_rules_edited'), !!settings.createFormatRules);
+        markEdited($root.find('#lorerev_create_edited'), sysEdited || !!settings.createFormatRules);
+        const problems = checkCreateRules(String($cRules.val()));
+        if (problems.length) $cRulesWarn.text(`Warning: these rules may break reading the reply (${problems.join('; ')}). ${CREATE_RULES_NOTE} Use "Restore default" to go back to the original rules.`).show();
+        else $cRulesWarn.hide().text('');
+    };
+    $cSys.on('input', () => { settings.createSystemPrompt = String($cSys.val()).trim() ? String($cSys.val()) : DEFAULT_CREATE_SYSTEM_PROMPT; refreshCreateMarks(); save(); });
+    $cSys.on('change', () => { if (!String($cSys.val()).trim()) $cSys.val(DEFAULT_CREATE_SYSTEM_PROMPT); });
+    $root.find('#lorerev_create_sys_reset').on('click', () => $cSys.val(DEFAULT_CREATE_SYSTEM_PROMPT).trigger('input'));
+    $cRules.on('input', () => {
+        const v = String($cRules.val());
+        settings.createFormatRules = !v.trim() || v.trim() === DEFAULT_CREATE_FORMAT_RULES.trim() ? '' : v;
+        refreshCreateMarks(); save();
+    });
+    $cRules.on('change', () => { if (!String($cRules.val()).trim()) { $cRules.val(DEFAULT_CREATE_FORMAT_RULES); refreshCreateMarks(); } });
+    $root.find('#lorerev_create_rules_reset').on('click', () => $cRules.val(DEFAULT_CREATE_FORMAT_RULES).trigger('input'));
+    refreshCreateMarks();
+
     // --- sidebar ---
     const $books = $root.find('#lorerev_books');
 
@@ -278,6 +336,11 @@ export async function openModal() {
             $book.find('.lorerev_count').text(`${chosen.size}/${book.entries.length}`);
             entryCount += chosen.size;
             if (chosen.size) bookCount++;
+        }
+        if (mode === 'create') {
+            const target = String($root.find('#lorerev_new_book').val() ?? '');
+            $root.find('#lorerev_selected_info').text(target ? `New entries will go into “${target}”` : 'Pick the lorebook for the new entries');
+            return;
         }
         $root.find('#lorerev_selected_info').text(
             entryCount ? `${entryCount} entries selected in ${bookCount} book(s)` : 'No entries selected');
@@ -341,7 +404,56 @@ export async function openModal() {
     async function refreshBooks() {
         books = await getLinkedBooks();
         renderBooks();
+        await fillCreateBooks();
     }
+
+    // --- mode switch (revise / new entries) and the new-entry panel ---
+    const $newBook = $root.find('#lorerev_new_book');
+    const $newCopy = $root.find('#lorerev_new_copy');
+    const $newExample = $root.find('#lorerev_new_example').prop('checked', createUseExample);
+    const PLACEHOLDERS = {
+        revise: 'Tell LoreReviser what to update in the selected lore… (Enter to send, Shift+Enter for a new line)',
+        create: 'Describe the new entries you want, e.g. "an entry for the blacksmith Tom from the last scene"… (Enter to send, Shift+Enter for a new line)',
+    };
+    function applyMode() {
+        $root.find('.lorerev_mode').each((_, el) => { el.classList.toggle('lorerev_mode_on', el.dataset.mode === mode); }); // braces: returning false would stop .each
+        $root.find('#lorerev_input').attr('placeholder', PLACEHOLDERS[mode]);
+        $root.find('#lorerev_send').text(mode === 'create' ? 'Propose' : 'Send');
+        $root.toggleClass('lorerev_mode_create', mode === 'create');
+        refreshChecks();
+    }
+    $root.find('.lorerev_mode').on('click', function () { mode = this.dataset.mode === 'create' ? 'create' : 'revise'; applyMode(); });
+
+    /** Target lorebook list: the linked ones first, then every other lorebook. */
+    async function fillCreateBooks() {
+        const all = SillyTavern.getContext().getWorldInfoNames();
+        const linked = books.map(b => b.name).filter(n => all.includes(n));
+        const others = all.filter(n => !linked.includes(n)).sort((a, b) => a.localeCompare(b));
+        $newBook.empty().append($('<option value="">Pick a lorebook…</option>'));
+        if (linked.length) $newBook.append($('<optgroup label="Linked to this chat">').append(linked.map(n => $('<option>').val(n).text(n))));
+        if (others.length) $newBook.append($('<optgroup label="Other lorebooks">').append(others.map(n => $('<option>').val(n).text(n))));
+        const want = all.includes(settings.createBook) ? settings.createBook : (linked[0] ?? '');
+        $newBook.val(want);
+        await fillCreateCopy();
+    }
+    /** "Copy settings from": the entries of the chosen lorebook. */
+    async function fillCreateCopy() {
+        const book = String($newBook.val() ?? '');
+        $newCopy.empty().append($('<option value="">(none: SillyTavern defaults)</option>'));
+        const entries = book ? await loadBookEntries(book) : null;
+        for (const e of entries ?? []) $newCopy.append($('<option>').val(String(e.uid)).text(`${e.title} (#${e.uid})${e.disabled ? ' – disabled' : ''}`));
+        const keep = createCopy.book === book && entries?.some(e => e.uid === createCopy.uid);
+        $newCopy.val(keep ? String(createCopy.uid) : '');
+        $newExample.prop('disabled', !keep);
+        refreshChecks();
+    }
+    $newBook.on('change', async () => { settings.createBook = String($newBook.val() ?? ''); save(); await fillCreateCopy(); });
+    $newCopy.on('change', () => {
+        const v = String($newCopy.val() ?? '');
+        createCopy = { book: String($newBook.val() ?? ''), uid: v === '' ? null : Number(v) };
+        $newExample.prop('disabled', v === '');
+    });
+    $newExample.on('change', () => { createUseExample = $newExample.prop('checked'); });
 
     $root.find('#lorerev_top_hist').on('click', () => openHistoryPicker({ onRestore: refreshBooks }));
 
@@ -384,13 +496,13 @@ export async function openModal() {
         $chat.children().detach(); // detach (not empty) so cached review cards keep their event handlers
         $chat.empty();
         if (!conversation.length) {
-            $chat.append($('<div class="lorerev_dim">').text('Pick lore entries on the left, then describe what should be updated.'));
+            $chat.append($('<div class="lorerev_dim">').text('Pick lore entries on the left, then describe what should be updated. Or switch to "New entries" below to have new entries written for a lorebook.'));
         }
         for (const m of conversation) {
             if (m.role === 'session') {
                 // Re-render from state every time: cached DOM can lose its handlers when the popup closes,
                 // and item.index / item.ui live on the session, so the card reopens on the attempt you were on.
-                $chat.append(renderSession(m.session, { refresh: () => redraw({ keepScroll: true }) }));
+                $chat.append(renderSession(m.session, { refresh: () => redraw({ keepScroll: true }), booksChanged: () => { refreshBooks(); } }));
                 continue;
             }
             const $m = $('<div class="lorerev_msg">').addClass(`lorerev_${m.role}`).text(m.text);
@@ -445,7 +557,81 @@ export async function openModal() {
         redraw();
     }
 
+    /** Shared tail of Send / Propose: warnings, the request, and the result in the chat. */
+    async function runRequest(session, sendFn, abort, rulesProblems, rulesHelp) {
+        const t = session.tokens;
+        if (t.tooBig) {
+            const warn = `The prompt is about ${t.promptTokens} tokens and the reply may use up to ${t.maxTokens}, which may not fit in the context of ${t.limit} tokens (from ${t.source}). Sending anyway; if it fails or is cut off, ${session.kind === 'create' ? 'lower the depth' : 'select fewer entries, lower the depth'}, or raise "Context" if your model allows more.`;
+            toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
+            conversation.splice(-1, 0, { role: 'warn', text: warn });
+        }
+        if (rulesProblems.length) {
+            const warn = `Your edited reply format rules may break reading the model's reply (${rulesProblems.join('; ')}). ${rulesHelp}`;
+            toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
+            conversation.splice(-1, 0, { role: 'warn', text: warn });
+        }
+        const nDup = session.context.loreRemoved?.length ?? 0;
+        if (nDup) {
+            conversation.splice(-1, 0, { role: 'info', text: `${nDup} selected ${nDup === 1 ? 'entry was' : 'entries were'} already active in the current lore; sent once, in full, with the entries to revise (not repeated in the active lore).` });
+        }
+        if (session.context.loreBudgetHit) {
+            // Informational: the active-lore part of the prompt is what ST itself would send (cut off by its World Info budget).
+            conversation.splice(-1, 0, { role: 'warn', text: budgetNote(session.context.loreBudget) });
+        }
+        conversation.at(-1).text = `Waiting for "${session.profile.name}" (about ${t.promptTokens} prompt tokens, up to ${t.maxTokens} reply tokens)…`;
+        redraw({ keepScroll: false });
+
+        await sendFn(session, abort.signal);
+        if (session.status === 'cancelled') return finishLoading({ role: 'assistant', text: 'Cancelled.' });
+        if (session.status === 'failed') {
+            const parseFailure = session.parse?.error;
+            toastr.error(session.error, 'LoreReviser');
+            return finishLoading({
+                role: 'error',
+                text: parseFailure ? `The model's reply could not be used: ${session.error} The raw reply is shown below.` : `The request failed: ${session.error}`,
+                raw: parseFailure ? session.rawReplies.at(-1) : null,
+            });
+        }
+        finishLoading({ role: 'session', session });
+    }
+
+    /** "New entries" mode: asks the model for new entries in the chosen lorebook. */
+    async function sendCreate() {
+        const $input = $root.find('#lorerev_input');
+        const text = String($input.val()).trim();
+        const profile = getChosenProfile();
+        const book = String($newBook.val() ?? '');
+        if (!profile) return showError('Select a connection profile first.');
+        if (!book) return showError('Pick the lorebook the new entries should go into.');
+        if (!SillyTavern.getContext().getWorldInfoNames().includes(book)) return showError(`The lorebook "${book}" no longer exists. Pick another one.`);
+        if (!text) return showError('Write instructions first: which new entries should be written?');
+        if (runState.busy) return showError('A request is still running. Wait for it or cancel it first.');
+        const copyVal = String($newCopy.val() ?? '');
+
+        $input.val('');
+        conversation = conversation.filter(m => m.role !== 'error');
+        conversation.push({ role: 'user', text: `New entries for “${book}”: ${text}` }, { role: 'loading', text: 'Building the prompt…' });
+        runState.busy = true;
+        const abort = new AbortController();
+        abortSend = () => abort.abort();
+        redraw();
+        try {
+            const session = await prepareCreateSession({ profile, settings, book, copyFrom: copyVal === '' ? null : Number(copyVal), useExample: !!$newExample.prop('checked'), instruction: text });
+            await runRequest(session, sendCreateSession, abort, checkCreateRules(settings.createFormatRules || DEFAULT_CREATE_FORMAT_RULES),
+                `${CREATE_RULES_NOTE} Sending anyway; if no entries show up, use "Restore default" under "New entry prompt".`);
+        } catch (e) {
+            console.error('[LoreReviser]', e);
+            toastr.error(describeError(e), 'LoreReviser');
+            finishLoading({ role: 'error', text: `Something went wrong: ${describeError(e)}` });
+        } finally {
+            runState.busy = false;
+            abortSend = null;
+            redraw();
+        }
+    }
+
     async function send() {
+        if (mode === 'create') return sendCreate();
         const $input = $root.find('#lorerev_input');
         const text = String($input.val()).trim();
         const profile = getChosenProfile();
@@ -466,44 +652,10 @@ export async function openModal() {
         redraw();
 
         try {
-            // 1. build the prompt and check its size (warn only)
+            // build the prompt and check its size (warn only), then send and parse
             const session = await prepareSession({ profile, settings, selection, instruction: text });
-            const t = session.tokens;
-            if (t.tooBig) {
-                const warn = `The prompt is about ${t.promptTokens} tokens and the reply may use up to ${t.maxTokens}, which may not fit in the context of ${t.limit} tokens (from ${t.source}). Sending anyway; if it fails or is cut off, select fewer entries, lower the depth, or raise "Context" if your model allows more.`;
-                toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
-                conversation.splice(-1, 0, { role: 'warn', text: warn });
-            }
-            const ruleProblems = checkFormatRules(settings.formatRules || DEFAULT_FORMAT_RULES);
-            if (ruleProblems.length) {
-                const warn = `Your edited reply format rules may break reading the model's reply (${ruleProblems.join('; ')}). ${FORMAT_RULES_NOTE} Sending anyway; if no changes show up, use "Restore default" under "Reply format rules (advanced)".`;
-                toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
-                conversation.splice(-1, 0, { role: 'warn', text: warn });
-            }
-            const nDup = session.context.loreRemoved.length;
-            if (nDup) {
-                conversation.splice(-1, 0, { role: 'info', text: `${nDup} selected ${nDup === 1 ? 'entry was' : 'entries were'} already active in the current lore; sent once, in full, with the entries to revise (not repeated in the active lore).` });
-            }
-            if (session.context.loreBudgetHit) {
-                // Informational: the active-lore part of the prompt is what ST itself would send (cut off by its World Info budget).
-                conversation.splice(-1, 0, { role: 'warn', text: budgetNote(session.context.loreBudget) });
-            }
-            conversation.at(-1).text = `Waiting for "${profile.name}" (about ${t.promptTokens} prompt tokens, up to ${t.maxTokens} reply tokens)…`;
-            redraw({ keepScroll: false });
-
-            // 2. send and parse
-            await sendSession(session, abort.signal);
-            if (session.status === 'cancelled') return finishLoading({ role: 'assistant', text: 'Cancelled.' });
-            if (session.status === 'failed') {
-                const parseFailure = session.parse?.error;
-                toastr.error(session.error, 'LoreReviser');
-                return finishLoading({
-                    role: 'error',
-                    text: parseFailure ? `The model's reply could not be used: ${session.error} The raw reply is shown below.` : `The request failed: ${session.error}`,
-                    raw: parseFailure ? session.rawReplies.at(-1) : null,
-                });
-            }
-            finishLoading({ role: 'session', session });
+            await runRequest(session, sendSession, abort, checkFormatRules(settings.formatRules || DEFAULT_FORMAT_RULES),
+                `${FORMAT_RULES_NOTE} Sending anyway; if no changes show up, use "Restore default" under "Reply format rules (advanced)".`);
         } catch (e) {
             console.error('[LoreReviser]', e);
             toastr.error(describeError(e), 'LoreReviser');
@@ -520,6 +672,7 @@ export async function openModal() {
     });
 
     renderChat();
+    applyMode();
     $books.append($('<div class="lorerev_dim">').text('Loading…'));
 
     // Open the popup; load books once it is on screen so the UI appears immediately.
@@ -536,6 +689,7 @@ export async function openModal() {
             }
             renderBooks();
             renderOrphans();
+            await fillCreateBooks();
         },
     });
     // ST's 'large' option sets height and max-width but leaves the popup at its default 500px width,

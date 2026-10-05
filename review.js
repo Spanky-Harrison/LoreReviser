@@ -1,12 +1,16 @@
 // Review UI: draws one revision session in the chat window as a list of per-entry cards.
 // Each card: Approve / Reject / Edit / Regenerate, plus swipe-style paging between attempts.
+// New-entry sessions (session.kind === 'create', see create.js) use the same cards: the "Old" side is empty, the edit
+// form has a Title, Approve creates the entry and Undo removes it again.
 // All state lives on the session/item objects (see revision.js), so a card can be re-drawn at any time.
 
 import { splitKeywordsAndRegexes } from '../../../world-info.js';
 import { integrityWarnings, sameAsOriginal } from './parse.js';
 import { $el, keyChips, contentView } from './views.js';
 import { openHistory } from './history.js';
-import { applyApproval, undoApproval } from './apply.js';
+import { applyApproval, undoApproval, applyCreate, undoCreate } from './apply.js';
+import { regenerateCreateItem } from './create.js';
+import { proposalWarnings, proposalLabel } from './create-core.js';
 import { INTENSITIES } from './intensity.js';
 import { CHANGE_TYPES } from './changetype.js';
 import { regenerateItem, retryMissing, describeEnd, describeError, runState } from './revision.js';
@@ -15,11 +19,13 @@ const currentAttempt = (item) => item.attempts[item.index];
 
 /**
  * @param {object} session
- * @param {{ onChange?: () => void, refresh?: () => void }} [hooks] refresh: redraw the open modal (used when async work finishes after a close/reopen)
+ * @param {{ onChange?: () => void, refresh?: () => void, booksChanged?: () => void }} [hooks] refresh: redraw the open modal (used when async work finishes after a close/reopen);
+ *        booksChanged: an entry was created or removed (the modal re-reads its lorebook list)
  * @returns {JQuery} the session element
  */
 export function renderSession(session, hooks = {}) {
-    const $root = $el('div', 'lorerev_session');
+    const isCreate = session.kind === 'create';
+    const $root = $el('div', `lorerev_session${isCreate ? ' lorerev_session_create' : ''}`);
     const $head = $el('div', 'lorerev_session_head');
     const $notes = $el('div', 'lorerev_session_notes');
     const $cards = $el('div', 'lorerev_cards');
@@ -27,6 +33,13 @@ export function renderSession(session, hooks = {}) {
     // ----- header and warnings -----
     function drawHead() {
         const count = (s) => session.items.filter(i => i.status === s).length;
+        if (isCreate) {
+            const bits = [`${session.items.length} proposed`];
+            if (count('approved')) bits.push(`${count('approved')} approved`);
+            if (count('rejected')) bits.push(`${count('rejected')} rejected`);
+            $head.empty().append($el('b', '', 'New entries'), $el('span', 'lorerev_dim', ` · ${session.profile.name} · into “${session.book}” · ${bits.join(' · ')}`));
+            return;
+        }
         const parts = [`${session.items.length} sent`, `${count('proposed') + count('approved') + count('rejected')} changed`, `${count('unchanged')} no changes`];
         if (count('missing')) parts.push(`${count('missing')} not returned`);
         if (count('approved')) parts.push(`${count('approved')} approved`);
@@ -36,6 +49,17 @@ export function renderSession(session, hooks = {}) {
     function drawNotes() {
         $notes.empty();
         const p = session.parse;
+        if (isCreate) {
+            $notes.append($el('div', 'lorerev_dim lorerev_create_settings', session.copyFrom
+                ? `Settings for the new entries: copied from “${session.copyFrom.title}” (#${session.copyFrom.uid}) when you approve (everything except content, title and keys)${session.example ? '; its text was also sent as a format example' : ''}.`
+                : 'Settings for the new entries: SillyTavern\'s defaults.'));
+            if (!session.items.length) $notes.append($el('div', 'lorerev_note lorerev_create_none', 'The model did not propose any new entries (it answered with an empty list). Rephrase your request and send again.'));
+            if (p?.truncated) $notes.append($el('div', 'lorerev_warn', `The reply was cut off (${p.info ? describeEnd(p.info, session.maxTokens) : `${session.maxTokens} tokens allowed`}). ${p.recovered} complete entr${p.recovered === 1 ? 'y was' : 'ies were'} recovered; anything after that is lost. Raise "Reply tokens" and send again if entries are missing.`));
+            if (p?.skipped) $notes.append($el('div', 'lorerev_warn', `${p.skipped} part(s) of the reply were not valid JSON and could not be read (see "Raw reply").`));
+            if (p?.dropped) $notes.append($el('div', 'lorerev_warn', `${p.dropped} proposed entr${p.dropped === 1 ? 'y had' : 'ies had'} neither content nor keys and ${p.dropped === 1 ? 'was' : 'were'} left out.`));
+            if (p?.repaired && !p.error) $notes.append($el('div', 'lorerev_dim', 'The model\'s JSON had formatting slips (raw line breaks or unescaped quotes); they were fixed automatically. Check that the text looks right.'));
+            return;
+        }
         if (p?.truncated) {
             const how = p.info?.lengthHit ? 'The reply was cut off by the reply token limit' : 'The reply stopped in the middle of the JSON';
             $notes.append($el('div', 'lorerev_warn',
@@ -88,7 +112,9 @@ export function renderSession(session, hooks = {}) {
     }
 
     function buildCard(item) {
-        item.ui ??= { view: 'changes', editing: false, regenText: '', collapsed: false };
+        const created = item.kind === 'create';
+        item.ui ??= { view: created ? 'new' : 'changes', editing: false, regenText: '', collapsed: false };
+        if (created && currentAttempt(item)) item.title = proposalLabel(currentAttempt(item));
         const ui = item.ui;
         const $card = $el('div', `lorerev_card lorerev_status_${item.status}`).attr('data-id', item.id);
         // Collapsible: the header line (chevron, title, book, status) toggles. ui.collapsed lives on the item, so it survives redraws and reopening.
@@ -96,7 +122,8 @@ export function renderSession(session, hooks = {}) {
         const collapsed = canCollapse && !!ui.collapsed;
         const title = $el('div', `lorerev_card_title${canCollapse ? ' lorerev_card_toggle' : ''}`).append(
             canCollapse ? $el('span', `lorerev_collapse fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'}`).attr('title', collapsed ? 'Show this card' : 'Hide the details of this card') : '',
-            $el('b', '', item.title), $el('span', 'lorerev_dim', ` ${item.book} · ${item.id}`),
+            $el('b', '', item.title), $el('span', 'lorerev_dim', created ? ` ${item.book} · new entry${item.uid !== null && item.uid !== undefined ? ` #${item.uid}` : ''}` : ` ${item.book} · ${item.id}`),
+            created ? $el('span', 'lorerev_pill lorerev_pill_new', 'New entry') : '',
             $el('span', `lorerev_pill lorerev_pill_${item.status}`, ({
                 proposed: 'Proposed', unchanged: 'No changes', missing: 'Not returned', loading: 'Regenerating…', approved: 'Approved', rejected: 'Rejected',
             })[item.status]));
@@ -151,10 +178,11 @@ export function renderSession(session, hooks = {}) {
                 attempt.changeType ? $el('span', '', `Change type: ${CHANGE_TYPES[attempt.changeType]?.label ?? attempt.changeType}. `) : '',
                 attempt.request ? $el('span', 'lorerev_request', `Your request for this attempt: “${attempt.request}”`) : ''));
         }
-        for (const w of integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));
+        for (const w of created ? proposalWarnings(attempt, session.existing ?? []) : integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));
 
         if (ui.editing) { $card.append(editForm(item, attempt)); return $card; }
 
+        if (created) $card.append($el('div', 'lorerev_keys lorerev_new_title').append($el('span', 'lorerev_dim', 'Title: '), attempt.title ? $el('b', '', attempt.title) : $el('span', 'lorerev_dim', '(none)')));
         $card.append(keyChips('Keys', item.original.keys, attempt.keys));
         if (item.original.secondary.length || attempt.secondary.length) $card.append(keyChips('Secondary keys', item.original.secondary, attempt.secondary));
         $card.append(viewToggle(item), contentView(item, attempt, ui.view));
@@ -182,13 +210,17 @@ export function renderSession(session, hooks = {}) {
      */
     function editForm(item, attempt) {
         const base = attempt ?? item.original;
+        const created = item.kind === 'create';
         const $f = $el('div', 'lorerev_edit');
+        const titleBox = created ? $('<input type="text" class="text_pole lorerev_ed_title">').val(base.title ?? '') : null;
+        if (created) $f.append($el('label', '', 'Title'), titleBox);
         const keys = $('<input type="text" class="text_pole lorerev_ed_keys">').val(base.keys.join(', '));
         const sec = $('<input type="text" class="text_pole lorerev_ed_sec">').val(base.secondary.join(', '));
         const content = $('<textarea class="text_pole lorerev_ed_content" rows="12">').val(base.content);
         $f.append($el('label', '', 'Keys (comma separated; /regex/ allowed)'), keys, $el('label', '', 'Secondary keys'), sec,
             $el('label', '', 'Content: exactly this text is what will be saved when you approve'), content);
-        const read = () => ({ keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: String(content.val()) });
+        const read = () => ({ ...(created ? { title: String(titleBox.val()).trim() } : {}), keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: String(content.val()) });
+        const sameAs = (a, b) => sameAsOriginal(a, b) && (!created || (a.title ?? '') === (b.title ?? ''));
         const afterEdit = () => {
             if (item.status === 'approved') item.reapprove = true;
             item.status = 'proposed'; item.applyMessage = null; item.notice = null; item.ui.editing = false; rerender(item);
@@ -202,10 +234,10 @@ export function renderSession(session, hooks = {}) {
                 item.index = item.attempts.length - 1;
             } else {
                 // remember what the model wrote so the edit can be undone
-                if (!attempt.modelVersion && !attempt.manual) attempt.modelVersion = { keys: [...attempt.keys], secondary: [...attempt.secondary], content: attempt.content };
+                if (!attempt.modelVersion && !attempt.manual) attempt.modelVersion = { ...(created ? { title: attempt.title } : {}), keys: [...attempt.keys], secondary: [...attempt.secondary], content: attempt.content };
                 Object.assign(attempt, v);
                 const mv = attempt.modelVersion;
-                attempt.edited = attempt.manual || !(mv && sameAsOriginal(mv, v));
+                attempt.edited = attempt.manual || !(mv && sameAs(mv, v));
             }
             afterEdit();
         }), $el('div', 'menu_button', 'Cancel').on('click', () => { item.ui.editing = false; rerender(item); }));
@@ -225,9 +257,9 @@ export function renderSession(session, hooks = {}) {
             const wasReapprove = item.reapprove;
             Object.assign(item, { status: 'approved', approvedAttempt: item.index, reapprove: false, error: null, notice: null, saving: true, applyMessage: null });
             rerender(item);
-            const res = await applyApproval(item, attempt, { instructions: session.instruction });
+            const res = await (item.kind === 'create' ? applyCreate : applyApproval)(item, attempt, { instructions: session.instruction });
             item.saving = false;
-            if (res.written) { item.applyMessage = res.message; ui.collapsed = true; } // approved cards fold away; click the header to look again
+            if (res.written) { item.applyMessage = res.message; ui.collapsed = true; if (item.kind === 'create') hooks.booksChanged?.(); } // approved cards fold away; click the header to look again
             else {
                 Object.assign(item, { status: 'proposed', reapprove: wasReapprove, error: res.message });
                 ui.collapsed = false;
@@ -246,15 +278,16 @@ export function renderSession(session, hooks = {}) {
             if (item.status !== 'approved') item.notice = null;
             item.status = 'proposed'; item.reapprove = false; item.applyMessage = null; item.error = null; ui.collapsed = false; afterAsync(item);
         });
-        if (which.includes('history')) btn('History', 'lorerev_btn_hist', () => openHistory({ book: item.book, uid: item.uid })).find('.lorerev_btn_hist').attr('title', 'Earlier saved versions of this entry');
+        if (which.includes('history')) btn('History', 'lorerev_btn_hist', () => openHistory({ book: item.book, uid: item.uid ?? null, onRestore: hooks.booksChanged })).find('.lorerev_btn_hist').attr('title', 'Earlier saved versions of this entry');
         return row;
     }
 
     /** Puts the version from before the approval back into the lorebook. Returns false (and shows why) if that wasn't possible. */
     async function revert(item) {
         item.saving = true; item.error = null; rerender(item);
-        const res = await undoApproval(item);
+        const res = await (item.kind === 'create' ? undoCreate : undoApproval)(item);
         item.saving = false;
+        if (res.reverted && item.kind === 'create') hooks.booksChanged?.();
         if (!res.reverted) {
             item.error = res.message; item.ui.collapsed = false; // show why
             toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
@@ -292,7 +325,7 @@ export function renderSession(session, hooks = {}) {
         runState.busy = true; item.abort = new AbortController();
         item.status = 'loading'; item.error = null; rerender(item);
         try {
-            await regenerateItem(session, item, note, item.abort.signal);
+            await (item.kind === 'create' ? regenerateCreateItem : regenerateItem)(session, item, note, item.abort.signal);
             item.ui.regenText = ''; // consumed: it now lives on the new attempt
         } catch (e) {
             item.status = before;

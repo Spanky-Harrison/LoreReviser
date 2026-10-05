@@ -158,3 +158,17 @@
 .lorerev_collapse { width: 14px; opacity: 0.7; }
 .lorerev_card.lorerev_card_folded { padding-top: 4px; padding-bottom: 4px; }
 .lorerev_card.lorerev_card_folded .lorerev_card_title { margin-bottom: 0; }
+
+/* ---------- milestone 5: new entries ---------- */
+.lorerev_modebar { display: flex; gap: 4px; flex-wrap: wrap; }
+.lorerev_mode { cursor: pointer; padding: 3px 12px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 12px; opacity: 0.7; white-space: nowrap; }
+.lorerev_mode:hover { opacity: 1; }
+.lorerev_mode.lorerev_mode_on { opacity: 1; font-weight: bold; background: rgba(70, 130, 220, 0.5); border-color: rgba(110, 160, 240, 0.9); }
+.lorerev_create_panel { display: none; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 8px; border: 1px dashed var(--SmartThemeBorderColor); border-radius: 8px; }
+.lorerev_mode_create .lorerev_create_panel { display: flex; }
+.lorerev_create_panel label { display: flex; align-items: center; gap: 6px; margin: 0; white-space: nowrap; }
+.lorerev_create_panel select { max-width: 320px; margin: 0; }
+.lorerev_new_example_lbl input { margin: 0; }
+.lorerev_pill.lorerev_pill_new { background: rgba(60, 170, 110, 0.35); }
+.lorerev_new_title b { font-weight: bold; }
+.lorerev_create_settings { margin: 2px 0 6px; }

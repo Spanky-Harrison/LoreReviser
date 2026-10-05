@@ -9,7 +9,8 @@ import { wiBudget, wiScanContext, budgetNote } from '../budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
-import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel } from '../archive-core.js';
+import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive } from '../archive-core.js';
+import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, effectiveCreateRules, effectiveCreatePrompt, proposalId, NOT_COPIED, settingsFrom, freeUid, nextDisplayIndex, toProposal, proposalLabel, proposalWarnings, entryMatches, buildCreateMessages } from '../create-core.js';
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('PASS:', name); };
@@ -317,5 +318,99 @@ t('relink: renames the index key, keeps the file, refuses to clobber another arc
 });
 t('record action labels are plain words', () => {
     assert.equal(actionLabel('approve'), 'Approved change'); assert.match(actionLabel('restore'), /Restored/); assert.match(actionLabel('undo'), /Undone/);
+});
+
+// ---------- milestone 5: new entries ----------
+t('new-entry reply: single object without id, wrapper keys', () => {
+    assert.equal(P('{"title":"Tom","keys":["Tom"],"content":"A smith."}').entries.length, 1);
+    assert.equal(P('{"new_entries":[{"title":"A","content":"a"},{"title":"B","content":"b"}]}').entries.length, 2);
+    assert.equal(P('{"proposals":[{"title":"A","content":"a"}]}').entries.length, 1);
+    const cut = P('{"new_entries":[{"title":"A","content":"a"},{"title":"B","content":"cut');
+    assert.equal(cut.entries.length, 1); assert.equal(cut.truncated, true);
+    const empty = P('[]'); assert.equal(empty.entries.length, 0); assert.equal(empty.error, null);
+});
+t('toProposal: field aliases, key strings, trimming, empty dropped', () => {
+    const p = toProposal({ title: ' Tom ', keys: 'Tom, smith, Tom', secondary_keys: [], content: 'A smith.', note: ' why ' }, { changeType: 'retcon' });
+    assert.deepEqual([p.title, p.keys, p.secondary, p.content, p.note, p.changeType, p.intensity, p.edited], ['Tom', ['Tom', 'smith'], [], 'A smith.', 'why', 'retcon', null, false]);
+    const q = toProposal({ comment: 'X', key: ['x'], keysecondary: ['y'], text: 'body' });
+    assert.deepEqual([q.title, q.keys, q.secondary, q.content], ['X', ['x'], ['y'], 'body']);
+    assert.equal(toProposal({ name: 'N', content: '' }), null);
+    assert.equal(toProposal(null), null);
+    assert.ok(toProposal({ keys: ['only keys'] }));
+    assert.deepEqual(toProposal({ content: 'c', keys: '/a, b/i, c' }, { split: (s) => ['/a, b/i', 'c'] }).keys, ['/a, b/i', 'c']);
+    assert.equal(proposalLabel({ title: '', keys: ['a', 'b', 'c', 'd'] }), 'a, b, c'); assert.equal(proposalLabel({ title: 'T', keys: [] }), 'T'); assert.equal(proposalLabel({ title: '', keys: [] }), 'New entry');
+    assert.equal(proposalId(0), 'N1');
+});
+t('settingsFrom copies everything except content, title, keys, uid, displayIndex', () => {
+    const src = { uid: 3, key: ['k'], keysecondary: ['s'], comment: 'T', content: 'C', displayIndex: 7, order: 42, position: 4, depth: 2, probability: 70, group: 'royals', characterFilter: { names: ['a'] }, disable: true, selective: false };
+    const out = settingsFrom(src);
+    for (const k of NOT_COPIED) assert.ok(!(k in out), k);
+    assert.deepEqual(out, { order: 42, position: 4, depth: 2, probability: 70, group: 'royals', characterFilter: { names: ['a'] }, disable: true, selective: false });
+    out.characterFilter.names.push('b'); assert.deepEqual(src.characterFilter.names, ['a']); // deep copy
+    assert.deepEqual(settingsFrom(null), {});
+});
+t('freeUid skips uids used in the book and in History; nextDisplayIndex goes last', () => {
+    assert.equal(freeUid(['0', '1', '2', '3'], []), 4);
+    assert.equal(freeUid(['0', '1', '3'], new Set([2, 4])), 5);
+    assert.equal(freeUid([], []), 0);
+    assert.equal(nextDisplayIndex({ 0: { uid: 0, displayIndex: 0 }, 1: { uid: 1, displayIndex: 9 }, 2: { uid: 5 } }), 10);
+    assert.equal(nextDisplayIndex({}), 0);
+});
+t('proposalWarnings: no keys, no content, duplicate title, shared keys', () => {
+    const existing = [{ uid: 0, title: 'Kingdom of Eldoria', keys: ['Eldoria'] }, { uid: 2, title: 'Silverwood', keys: ['Silverwood', 'forest'] }];
+    assert.deepEqual(proposalWarnings({ title: 'Tom', keys: ['Tom'], content: 'x' }, existing), []);
+    const w = proposalWarnings({ title: 'silverwood', keys: ['Forest'], content: 'x' }, existing);
+    assert.equal(w.length, 1); assert.match(w[0], /already has an entry titled "Silverwood" \(#2\)/);
+    const w2 = proposalWarnings({ title: 'Woods', keys: ['FOREST', 'eldoria'], content: '' }, existing);
+    assert.equal(w2.length, 3); assert.match(w2[0], /no content/); assert.match(w2.join('|'), /"Eldoria" already used by "Kingdom of Eldoria"/); assert.match(w2.join('|'), /"forest" already used by "Silverwood"/);
+    assert.match(proposalWarnings({ title: '', keys: [], content: 'x' })[0], /no keys/);
+    // the real title (comment) is compared, not the fallback label of an untitled entry
+    assert.deepEqual(proposalWarnings({ title: 'Silverwood, forest', keys: ['x'], content: 'x' }, [{ uid: 2, title: 'Silverwood, forest', comment: '', keys: ['y'] }]), []);
+});
+t('entryMatches compares keys, secondary keys, content and title', () => {
+    const e = { key: ['a'], keysecondary: [], content: 'c', comment: 'T' };
+    const v = { keys: ['a'], secondary: [], content: 'c' };
+    assert.ok(entryMatches(e, v, 'T')); assert.ok(!entryMatches(e, v, 'U')); assert.ok(!entryMatches({ ...e, content: 'd' }, v, 'T'));
+    assert.ok(!entryMatches(null, v, 'T')); assert.ok(entryMatches({ key: [], content: '' }, { keys: [], secondary: [], content: '' }, ''));
+});
+t('new-entry rules check and defaults', () => {
+    assert.deepEqual(checkCreateRules(DEFAULT_CREATE_FORMAT_RULES), []);
+    assert.equal(checkCreateRules('').length, 1);
+    assert.equal(checkCreateRules('Write some prose.').length, 4);
+    assert.equal(effectiveCreateRules(''), DEFAULT_CREATE_FORMAT_RULES); assert.equal(effectiveCreateRules('mine'), 'mine');
+    assert.equal(effectiveCreatePrompt('  '), DEFAULT_CREATE_SYSTEM_PROMPT);
+    assert.match(DEFAULT_CREATE_SYSTEM_PROMPT, /"Change type" section/); assert.doesNotMatch(DEFAULT_CREATE_SYSTEM_PROMPT, /Rewrite intensity/);
+});
+t('buildCreateMessages: sections, change type (no intensity), format example, regeneration', () => {
+    const context = { card: 'Character: Q', lore: '', history: 'User: hi', noChat: false, messagesUsed: 1, messagesTotal: 3 };
+    const existing = [{ uid: 0, title: 'Kingdom', keys: ['Eldoria'] }];
+    const m = buildCreateMessages({ systemPrompt: 'SYS', changeType: 'retcon', context, book: 'Eldoria', existing, example: { title: 'Queen', keys: ['Maren'], secondary: [], content: 'Stern.' }, instruction: 'Add Tom.' });
+    assert.equal(m.length, 2); assert.equal(m[0].role, 'system');
+    assert.ok(m[0].content.startsWith('SYS\n\n## Change type: Retcon')); assert.ok(m[0].content.endsWith(DEFAULT_CREATE_FORMAT_RULES)); assert.doesNotMatch(m[0].content, /Rewrite intensity/);
+    const u = m[1].content;
+    for (const tag of ['<character_card>', '<active_lore>\n(none active)', '<chat_history messages="1 of 3">', '<target_lorebook name="Eldoria" existing_entries="1">', '<existing_entry title="Kingdom" keys=["Eldoria"]/>', '<format_example title="Queen">', 'Stern.', '<instructions>\nAdd Tom.', 'Reply with the JSON array of new entries only.']) assert.ok(u.includes(tag), tag);
+    assert.ok(u.indexOf('<target_lorebook') < u.indexOf('<format_example') && u.indexOf('<format_example') < u.indexOf('<instructions>'));
+    const noEx = buildCreateMessages({ systemPrompt: 'SYS', changeType: 'development', context: { ...context, noChat: true }, book: 'B', existing: [], instruction: 'x', formatRules: 'MY RULES' })[1].content;
+    assert.ok(!noEx.includes('<format_example')); assert.ok(noEx.includes('(the lorebook has no entries yet)')); assert.ok(noEx.includes('messages="0 of 3"'));
+    const r = buildCreateMessages({ systemPrompt: 'SYS', changeType: 'development', context, book: 'B', existing: [], instruction: 'x', formatRules: 'MY RULES',
+        regen: { id: 'N2', attempts: [{ title: 'Tom', keys: ['Tom'], secondary: [], content: 'v1' }, { title: 'Tom', keys: ['Tom'], secondary: [], content: 'v2', edited: true, request: 'shorter' }], note: 'add his age' } });
+    assert.ok(r[0].content.endsWith('MY RULES'));
+    assert.ok(r[1].content.includes('<previous_attempts proposal="N2">')); assert.ok(r[1].content.includes('<attempt n="2" edited_by_user="true" user_request="shorter">{"title":"Tom"'));
+    assert.match(r[1].content, /<regeneration_request>\nThe user wants a new version of the proposed new entry N2\..*follow it\): add his age Reply with a JSON array containing exactly one entry\./);
+    assert.ok(!r[1].content.includes('Reply with the JSON array of new entries only.'));
+});
+t('History records for new entries: create / remove / recreate', () => {
+    const empty = { keys: [], secondary: [], content: '' };
+    const c = makeRecord({ action: 'create', uid: 4, title: 'Tom', before: empty, after: { keys: ['Tom'], secondary: [], content: 'A smith.' }, extra: { comment: 'Tom', settingsFrom: { uid: 1, title: 'Queen Maren' }, nothing: null, gone: undefined, uid: 99 } });
+    assert.equal(c.uid, 4); assert.equal(c.comment, 'Tom'); assert.deepEqual(c.settingsFrom, { uid: 1, title: 'Queen Maren' }); assert.ok(!('nothing' in c) && !('gone' in c));
+    assert.deepEqual(c.old, empty);
+    const r = makeRecord({ action: 'remove', uid: 4, title: 'Tom', before: c.new, after: empty, extra: { snapshot: { uid: 4, order: 42 }, via: 'undo' } });
+    const rc = makeRecord({ action: 'recreate', uid: 6, title: 'Tom', before: empty, after: c.new, extra: { originalUid: 4 } });
+    assert.ok(createdByRecord(c) && createdByRecord(rc) && !createdByRecord(r)); assert.ok(removedByRecord(r) && !removedByRecord(c));
+    assert.ok(!createdByRecord(null) && !removedByRecord(undefined));
+    assert.deepEqual([...uidsInArchive({ records: [c, r, rc, { uid: 'x' }] })].sort(), [4, 6]);
+    assert.deepEqual([...uidsInArchive({ records: [{ uid: 1, snapshot: { uid: 9 } }] })].sort(), [1, 9]);
+    assert.equal(uidsInArchive(null).size, 0);
+    assert.equal(actionLabel('create'), 'New entry created'); assert.match(actionLabel('remove'), /removed/); assert.match(actionLabel('recreate'), /created again/);
 });
 console.log(`${n} unit tests passed`);

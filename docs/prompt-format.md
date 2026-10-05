@@ -1,4 +1,4 @@
-# Prompt and reply format (milestone 3)
+# Prompt and reply format (milestones 3 and 5)
 
 LoreReviser builds one request itself and sends it on the chosen Connection Manager profile. This file describes it;
 the code is in `prompt.js` (building), `parse.js` (reading the reply) and `revision.js` (sending).
@@ -204,3 +204,131 @@ The queen turned 55 and is now also called Maren the Wise.
 
 Reply with the JSON array only.
 ```
+
+
+## New entries
+
+Milestone 5. A separate request, sent from the modal's **New entries** mode (code: `create.js`, pure parts in `create-core.js`). Same profile, Depth, Context and Reply tokens settings as a revision; `max_tokens` is the "Reply tokens" value or, at 0, **8192**.
+
+### Request
+
+1. **system** = the **new-entry system prompt** + the **`## Change type: <Label>`** section (the same wording as for revisions, chosen in the modal) + the **new-entry reply-format rules**. There is **no rewrite-intensity section**: there is no existing text to rewrite. The new-entry prompt and rules are separate from the revision ones and editable in the modal under **New entry prompt** (each with Restore default; stored as `settings.createSystemPrompt` and `settings.createFormatRules`, the latter only when edited).
+2. **user** = these sections, in this order:
+   - `<character_card>`, `<active_lore>`, `<chat_history>`: built exactly as for a revision (nothing is removed from the active lore, because no entry is being revised; depth -1 keeps the block with the "no chat history" note).
+   - `<target_lorebook name=... existing_entries=N>`: one `<existing_entry title=... keys=[...]/>` line per entry already in the chosen lorebook (title = the entry's real title, empty if it has none; no content, to save tokens), so the model can avoid duplicates.
+   - `<format_example title=...>` (only when an entry is chosen under "Copy settings from" and "also send its text as a format example" is ticked): that entry's keys, secondary keys and content. The prompt says to copy its layout and style, not its facts.
+   - `<instructions>`: what you typed.
+   - `Reply with the JSON array of new entries only.`
+
+Example user message (depth 3, with a format example):
+
+```
+<character_card>
+Character: Test Queen
+User: User
+
+Description:
+A queen.
+</character_card>
+
+<active_lore>
+Silver crowns.
+The moon festival falls on the third full moon.
+</active_lore>
+
+<chat_history messages="3 of 8">
+User: Message number 6
+
+Test Queen: Message number 7
+
+User: Message number 8
+</chat_history>
+
+<target_lorebook name="Eldoria" existing_entries="3">
+<existing_entry title="Kingdom of Eldoria" keys=["Eldoria","the kingdom"]/>
+<existing_entry title="Queen Maren" keys=["Maren","queen"]/>
+<existing_entry title="" keys=["Silverwood","forest"]/>
+</target_lorebook>
+
+<format_example title="Queen Maren">
+<keys>["Maren","queen"]</keys>
+<secondary_keys>[]</secondary_keys>
+<content>
+Stern but fair monarch, 54 years old.
+</content>
+</format_example>
+
+<instructions>
+Add the blacksmith Tom from the last scene.
+</instructions>
+
+Reply with the JSON array of new entries only.
+```
+
+### Default system prompt for new entries
+
+```
+You are a careful lorebook writer for an ongoing roleplay. Lorebook entries are short reference texts that are injected into the roleplay prompt when their keywords appear.
+
+You will receive the character card, the lore that is currently active, the recent chat, a list of the entries that already exist in the target lorebook, and the user's request. Write the NEW lorebook entries the user asks for.
+
+Guidelines:
+- Write only new entries. Do not rewrite or repeat existing entries, and do not create an entry for something an existing entry already covers.
+- Base every fact on the chat, the character information, the active lore and the user's instructions. Do not contradict them. Only fill gaps with invented detail where the user asks for it.
+- One subject per entry (a person, place, item, faction, event, custom, concept ...). Entries are compact reference texts, not summaries of the chat.
+- If a <format_example> is given, write every entry in the same style and layout as it: markdown, line breaks, bracket or tag styles (such as [Name: ...] or <tag>), field layouts (such as "Key: value" lines), list styles, casing, point of view and rough length. Use it for the format only; do not copy its facts. Without an example, follow the style of the existing lore.
+- Follow the "Change type" section: it says whether the lore may describe how things came to be (a development in the story) or must read as though it had always been true (retcon).
+- Keys are the trigger words: names, nicknames or terms that will really appear in the chat. Give each entry 1 to 5 natural keys and avoid very common words.
+- Give each entry a short title, usually the name of its subject.
+```
+
+### Default reply-format rules for new entries
+
+```
+## Reply format (strict)
+Reply with ONE JSON array and nothing else: no commentary before or after it, no markdown code fences.
+Each element is one new entry:
+{"title": "...", "keys": ["..."], "secondary_keys": [], "content": "...", "note": "..."}
+
+Rules:
+- "title": a short name for the entry (shown as its title in the lorebook).
+- "keys": the trigger keys, at least one. "secondary_keys": optional extra keys; usually leave it as [].
+- "content": the complete text of the entry.
+- "note": one short sentence for the user saying what the entry covers and why it is useful.
+- Propose as many entries as the request needs, usually one per subject. If no new entry is needed, reply [].
+- If the content has several lines or paragraphs, use \n in the JSON string.
+- The reply must be valid JSON: escape double quotes inside strings as \" and line breaks as \n.
+```
+
+### Reply
+
+A JSON array, one element per new entry:
+
+```json
+[{"title": "Tom the Blacksmith", "keys": ["Tom", "blacksmith"], "secondary_keys": [], "content": "Tom forges blades for the royal guard.\nHe works by the north gate.", "note": "Tom appeared in the last scene."}]
+```
+
+- Read with the same tolerant parser as revisions (code fences, chatter, `<think>` blocks, trailing commas, JSON repair, cut-off replies keep every complete entry). Also accepted: a single object, a `{"new_entries": [...]}` or `{"proposals": [...]}` wrapper, `comment`/`name` for the title, `key`/`keysecondary` for the keys, keys as a comma-separated string (split like SillyTavern does, so `/regex, with comma/` keys survive).
+- An element with neither content nor keys is left out (the session says how many). `[]` means "no new entry needed" and is shown as such. An unreadable reply shows the error and the raw reply.
+- Each element becomes a review card (ids N1, N2, ... for this session only). Warnings (never blocking): no keys, no content, a title equal to an existing entry's title, or a key that an existing entry already uses.
+
+### Regenerate
+
+Same request plus:
+
+```
+<previous_attempts proposal="N1">
+<attempt n="1">{"title":"Tom the Blacksmith","keys":["Tom","blacksmith"],"secondary_keys":[],"content":"..."}</attempt>
+<attempt n="2" edited_by_user="true" user_request="the request typed for this attempt">{...}</attempt>
+</previous_attempts>
+
+<regeneration_request>
+The user wants a new version of the proposed new entry N1. Write a different, better version than the previous attempts, about the same subject. The user's extra request for this regeneration (follow it): <text from the box under the card> Reply with a JSON array containing exactly one entry.
+</regeneration_request>
+```
+
+The change type chosen in the modal at that moment applies (shown on the attempt). The first element of the reply is used.
+
+### What Approve writes
+
+`createWorldInfoEntry` (SillyTavern's own template = the defaults of the World Info editor's "New entry" button), then, if an entry was chosen under "Copy settings from", every field of that entry (read again at Approve time) except `uid`, `content`, `comment`, `key`, `keysecondary` and `displayIndex`; then the proposal's `comment` (title), `key`, `keysecondary` and `content`, `addMemo = true` when there is a title, and `displayIndex` after the last entry. Saved with `saveWorldInfo(name, data, true)` + `reloadWorldInfoEditor`. The uid is SillyTavern's lowest free number unless that number already appears in the book's History, in which case the next number that is free in both is used. History records: `create` (old side empty; `comment`, `settingsFrom` = {uid, title} or "defaults"), `remove` (new side empty; `snapshot` = the whole entry; `via` = "undo" or "history"), `recreate` (from a removal's snapshot; `originalUid` if it got a new number), and `approve` when an approved card is edited and approved again (`oldTitle` if the title changed).

@@ -57,14 +57,17 @@ const version = (v) => ({ keys: [...(v?.keys ?? [])], secondary: [...(v?.seconda
 /**
  * One archive record.
  * @param {object} p
- * @param {'approve'|'undo'|'restore'} p.action  approve = an approved revision was saved; undo = Undo on an approved card put the old version back;
- *                                               restore = a version was put back from History
+ * @param {'approve'|'undo'|'restore'|'create'|'remove'|'recreate'} p.action  approve = an approved revision was saved; undo = Undo on an
+ *        approved card put the old version back; restore = a version was put back from History; create = an approved new
+ *        entry was created (old side empty); remove = a created entry was removed again (Undo on its card, or from History;
+ *        new side empty, `snapshot` holds the whole entry); recreate = a removed entry was created again from History
+ * @param {object} [p.extra] more fields for the record (e.g. settingsFrom, snapshot, via); undefined/null values are skipped
  * @param {number} p.uid entry uid
  * @param {string} p.title entry title (comment) or label
  * @param {{keys:string[], secondary:string[], content:string}} p.before what was in the lorebook before
  * @param {{keys:string[], secondary:string[], content:string}} p.after what was saved
  */
-export function makeRecord({ action, uid, title, before, after, instructions = '', request = '', intensity = null, changeType = null, edited = false, restoredFrom = null, now = new Date() }) {
+export function makeRecord({ action, uid, title, before, after, instructions = '', request = '', intensity = null, changeType = null, edited = false, restoredFrom = null, extra = {}, now = new Date() }) {
     const rec = {
         id: `${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         time: now.toISOString(), action, uid: Number(uid), title: String(title ?? ''),
@@ -76,6 +79,7 @@ export function makeRecord({ action, uid, title, before, after, instructions = '
     if (changeType) rec.changeType = changeType;
     if (edited) rec.edited = true;
     if (restoredFrom) rec.restoredFrom = restoredFrom;
+    for (const [k, v] of Object.entries(extra ?? {})) if (v !== undefined && v !== null && !(k in rec)) rec[k] = v;
     return rec;
 }
 
@@ -116,5 +120,23 @@ export function relinkIndex(index, from, to) {
 
 /** Plain-language label for a record's action. */
 export function actionLabel(action) {
-    return ({ approve: 'Approved change', undo: 'Undone (old version put back)', restore: 'Restored from History' })[action] ?? String(action);
+    return ({
+        approve: 'Approved change', undo: 'Undone (old version put back)', restore: 'Restored from History',
+        create: 'New entry created', remove: 'Entry removed (creation undone)', recreate: 'Entry created again',
+    })[action] ?? String(action);
+}
+
+/** The record's Old side is "no entry" (it created the entry). Restoring it means removing the entry. */
+export const createdByRecord = (r) => r?.action === 'create' || r?.action === 'recreate';
+/** The record's New side is "no entry" (it removed the entry). Restoring it means creating the entry again (from r.snapshot). */
+export const removedByRecord = (r) => r?.action === 'remove';
+
+/** Every uid that a book's History mentions (records and snapshots), so a new entry never reuses one. */
+export function uidsInArchive(archive) {
+    const out = new Set();
+    for (const r of archive?.records ?? []) {
+        if (Number.isInteger(Number(r.uid))) out.add(Number(r.uid));
+        if (r.snapshot && Number.isInteger(Number(r.snapshot.uid))) out.add(Number(r.snapshot.uid));
+    }
+    return out;
 }

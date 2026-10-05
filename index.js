@@ -1,5 +1,4 @@
 // LoreReviser: entry point. Adds a wand-menu item that opens the LoreReviser modal.
-// Milestone 2: UI only, no model calls.
 
 import { openModal } from './modal.js';
 import { getSettings } from './settings.js';
