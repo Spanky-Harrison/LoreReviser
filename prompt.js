@@ -10,6 +10,7 @@ import * as worldInfo from '../../../world-info.js';
 import * as regexEngine from '../../regex/engine.js';
 import { normalizeDepth, sliceByDepth } from './depth.js';
 import { dedupeLore, assembleLore } from './dedupe.js';
+import { intensitySection } from './intensity.js';
 
 /** Fixed reply-format rules, appended after the user's system prompt. */
 export const FORMAT_RULES = `## Reply format (strict)
@@ -23,7 +24,7 @@ Rules:
 - "content": the complete new text of the entry (not a diff). Leave this field out if the content stays the same.
 - "keys" and "secondary_keys": the complete new list of trigger keys. Leave a field out if that list stays the same.
 - "note": one short sentence saying what you changed and why.
-- Keep {{macros}}, @@decorator lines at the start of the content, and /regex/ keys exactly as they are, unless the user's instructions say otherwise.
+- Maintain ALL current formatting of each entry unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles ([Name: ...], <tag>), field layouts ("Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines at the start of the content, and /regex/ keys. Text you add must use the same layout as the text around it. If the content has several lines or paragraphs, keep the same line structure (use \n in the JSON string).
 - The reply must be valid JSON: escape double quotes inside strings as \\" and line breaks as \\n.`;
 
 /** Short ids for the entries in one request: E1, E2, ... They map back to (book, uid) in the session. */
@@ -193,10 +194,11 @@ const attemptJson = (a) => JSON.stringify({ keys: a.keys, secondary_keys: a.seco
  * @param {Awaited<ReturnType<typeof gatherContext>>} p.context
  * @param {object[]} p.items entries to revise
  * @param {string} p.instruction the user's instructions
+ * @param {string} [p.intensity] 'light' | 'balanced' | 'heavy' (see intensity.js)
  * @param {object[]} [p.attempts] regeneration only: earlier attempts of the single entry
  * @param {string} [p.regenNote] regeneration only: extra guidance
  */
-export function buildMessages({ systemPrompt, context, items, instruction, attempts = null, regenNote = '' }) {
+export function buildMessages({ systemPrompt, context, items, instruction, intensity, attempts = null, regenNote = '' }) {
     const sections = [
         `<character_card>\n${context.card}\n</character_card>`,
         `<active_lore>\n${loreFor(context, items).lore || '(none active)'}\n</active_lore>`,
@@ -209,14 +211,14 @@ export function buildMessages({ systemPrompt, context, items, instruction, attem
     if (attempts) {
         const id = items[0].id;
         sections.push(`<previous_attempts entry="${id}">\n${attempts.map((a, i) =>
-            `<attempt n="${i + 1}"${a.edited ? ' edited_by_user="true"' : ''}>${attemptJson(a)}</attempt>`).join('\n')}\n</previous_attempts>`);
-        sections.push(`<regeneration_request>\nThe user wants a new version of entry ${id}. Write a different, better version than the previous attempts`
-            + `${regenNote.trim() ? `, following this extra guidance: ${regenNote.trim()}` : ''}. Reply with a JSON array containing only entry ${id}.\n</regeneration_request>`);
+            `<attempt n="${i + 1}"${a.edited ? ' edited_by_user="true"' : ''}${a.request ? ` user_request=${JSON.stringify(a.request)}` : ''}>${attemptJson(a)}</attempt>`).join('\n')}\n</previous_attempts>`);
+        sections.push(`<regeneration_request>\nThe user wants a new version of entry ${id}. Write a different, better version than the previous attempts.`
+            + `${regenNote.trim() ? ` The user's extra request for this regeneration (follow it): ${regenNote.trim()}` : ''} Reply with a JSON array containing only entry ${id}.\n</regeneration_request>`);
     } else {
         sections.push('Reply with the JSON array only.');
     }
     return [
-        { role: 'system', content: `${systemPrompt.trim()}\n\n${FORMAT_RULES}` },
+        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity)}\n\n${FORMAT_RULES}` },
         { role: 'user', content: sections.join('\n\n') },
     ];
 }

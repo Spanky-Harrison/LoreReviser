@@ -93,6 +93,7 @@ try {
   if (process.env.SAMPLE_OUT) fs.writeFileSync(process.env.SAMPLE_OUT, JSON.stringify(r1, null, 2)); // example request for docs
   check('A: request: model + max_tokens', r1.model === 'fake-model' && r1.max_tokens >= 1500, JSON.stringify([r1.model, r1.max_tokens]));
   check('A: request: system prompt = editable prompt + fixed format rules', r1.messages[0].role === 'system' && /careful lorebook editor/.test(r1.messages[0].content) && /Reply format \(strict\)/.test(r1.messages[0].content));
+  check('A: system message: default intensity Balanced + formatting-preservation rules', /## Rewrite intensity: Balanced\nBALANCED\./.test(r1.messages[0].content) && /Maintain ALL current formatting/.test(r1.messages[0].content) && r1.messages[0].content.indexOf('Rewrite intensity') < r1.messages[0].content.indexOf('Reply format (strict)'));
   check('A: request: character card', /<character_card>\nCharacter: Test Queen/.test(u1) && /Description:\nA queen\./.test(u1));
   check('A: request: active lore (constant entry)', /<active_lore>[\s\S]*Silver crowns\.[\s\S]*<\/active_lore>/.test(u1));
   check('A: request: depth 3 -> last 3 messages only', /messages="3 of 8"/.test(u1) && u1.includes('Message number 8') && u1.includes('Message number 6') && !u1.includes('Message number 5'));
@@ -126,7 +127,6 @@ try {
   // ================= D. regenerate (swipe-style) =================
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Queen Maren}}","keys":["Maren","queen"],"content":"Regenerated: a stern monarch of 55.","note":"Second try."}]' }]);
-  await card('Queen Maren').locator('.menu_button', { hasText: 'Regenerate…' }).click();
   await card('Queen Maren').locator('.lorerev_regen textarea').fill('make it shorter');
   await card('Queen Maren').locator('.lorerev_regen .menu_button').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
@@ -147,7 +147,6 @@ try {
   // regenerate an entry that had "no changes"
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Kingdom of Eldoria}}","content":"A northern kingdom ruled by Queen Maren the Wise."}]' }]);
-  await card('Kingdom of Eldoria').locator('.menu_button', { hasText: 'Regenerate…' }).click();
   await card('Kingdom of Eldoria').locator('.lorerev_regen .menu_button').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_card')].some(c => c.textContent.includes('Kingdom of Eldoria') && c.querySelector('.lorerev_pill_proposed')));
   check('D2: no-change entry can be regenerated into a proposal', (await pill('Kingdom of Eldoria').textContent()) === 'Proposed');
@@ -162,7 +161,6 @@ try {
   // ================= F. regenerate failure keeps old attempts =================
   await fake.reset();
   await fake.queue([{ status: 500, errorMessage: 'Model exploded' }]);
-  await card('Queen Maren').locator('.menu_button', { hasText: 'Regenerate…' }).click();
   await card('Queen Maren').locator('.lorerev_regen .menu_button').click();
   await card('Queen Maren').locator('.lorerev_error_line').waitFor();
   check('F: error shown on card', /Regeneration failed/.test(await card('Queen Maren').locator('.lorerev_error_line').textContent()));
@@ -364,7 +362,6 @@ try {
   await tcard.locator('.menu_button', { hasText: 'Undo' }).click();
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Traveler Backstory}}","content":"Second attempt text."}]' }]);
-  await tcard.locator('.menu_button', { hasText: 'Regenerate…' }).click();
   await tcard.locator('.lorerev_regen .menu_button').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
   await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
@@ -452,7 +449,6 @@ try {
   // regenerate path keeps sending no chat
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Queen Maren}}","content":"Second try, 55."}]' }]);
-  await card('Queen Maren').locator('.menu_button', { hasText: 'Regenerate…' }).click();
   await card('Queen Maren').locator('.lorerev_regen .menu_button').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
   const sr = userMsg(await lastReq());
@@ -522,11 +518,81 @@ try {
   // regenerate Currency: the request only lists Currency, so Moon Calendar (not part of it) reappears as lore
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns, gold marks and copper bits."}]' }]);
-  await card('Currency').locator('.menu_button', { hasText: 'Regenerate…' }).click();
   await card('Currency').locator('.lorerev_regen .menu_button').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
   const t4 = userMsg(await lastReq());
   check('T3: regenerate lists only Currency (once), keeps it out of the lore, and shows the entries not in this request as lore again', (t4.match(/<entry id=/g) ?? []).length === 1 && !loreBlock(t4).includes('Silver crowns') && loreBlock(t4).includes('third full moon.') && loreBlock(t4).includes('Stern but fair monarch') && count(t4, 'Silver crowns.') === 1);
+
+  // ================= U. rewrite intensity (persisted, in the prompt, applies on regenerate) =================
+  check('U: default intensity is Balanced', (await page.inputValue('#lorerev_intensity')) === 'balanced');
+  const sysOf = async () => (await lastReq()).messages[0].content;
+  await page.selectOption('#lorerev_intensity', 'light');
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }]);
+  await send('U: change the currency.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 16);
+  const uLight = await sysOf();
+  check('U: Light touch wording in the system message (and only that level)', /## Rewrite intensity: Light touch\nLIGHT TOUCH\. Change only what MUST change/.test(uLight) && /verbatim/.test(uLight) && !/BALANCED\.|HEAVY-HANDED\./.test(uLight));
+  check('U: attempt shows the intensity it was made with', /Rewrite intensity: Light touch/.test(await card('Currency').textContent()));
+  await shot('34-intensity-light.png');
+
+  // ================= V. regenerate box: always visible, multi-line, remembered per attempt =================
+  const cur = card('Currency');
+  check('V: regenerate box is visible without clicking anything, multi-line', (await cur.locator('.lorerev_regen_text').isVisible()) && Number(await cur.locator('.lorerev_regen_text').getAttribute('rows')) >= 3 && (await cur.locator('.menu_button', { hasText: 'Regenerate…' }).count()) === 0);
+  check('V: also on "No changes" cards, not on approved cards', (await card('Moon Calendar').locator('.lorerev_regen_text').isVisible()) === true);
+  await cur.locator('.lorerev_btn_ok').click();
+  check('V: approved card has no regenerate box (Undo first)', (await cur.locator('.lorerev_regen_text').count()) === 0);
+  await cur.locator('.menu_button', { hasText: 'Undo' }).click();
+  const REQ1 = 'Make it shorter.\nMention the gold marks.';
+  await page.selectOption('#lorerev_intensity', 'heavy');
+  await cur.locator('.lorerev_regen_text').fill(REQ1);
+  await cur.locator('.lorerev_view', { hasText: 'New' }).click(); // a rerender must keep the draft
+  check('V: draft text survives a re-render', (await cur.locator('.lorerev_regen_text').inputValue()) === REQ1);
+  await shot('35-regen-box.png');
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns, gold marks."}]' }]);
+  await cur.locator('.lorerev_btn_regen').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
+  const v1 = await lastReq(); const vu = userMsg(v1);
+  check('V: request text is sent in <regeneration_request>, both lines', /<regeneration_request>[\s\S]*Make it shorter\.\nMention the gold marks\.[\s\S]*<\/regeneration_request>/.test(vu));
+  check('V: regenerate uses the CURRENT intensity (Heavy-handed)', /## Rewrite intensity: Heavy-handed\nHEAVY-HANDED\./.test(v1.messages[0].content) && !/LIGHT TOUCH\./.test(v1.messages[0].content));
+  check('V: box is cleared after use; attempt 2 remembers request + intensity', (await cur.locator('.lorerev_regen_text').inputValue()) === '' && (await cur.locator('.lorerev_attempt_info').textContent()).includes('Make it shorter.') && /Heavy-handed/.test(await cur.locator('.lorerev_attempt_info').textContent()));
+  await cur.locator('.lorerev_pg', { hasText: '‹' }).click();
+  check('V: attempt 1 has no request, shows its own intensity', !/Your request/.test(await cur.textContent()) && /Light touch/.test(await cur.locator('.lorerev_attempt_info').textContent()));
+  await cur.locator('.lorerev_pg', { hasText: '›' }).click();
+  await shot('36-regen-request-remembered.png');
+  await fake.reset();
+  await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Third."}]' }]);
+  await cur.locator('.lorerev_regen_text').fill('Third try: be creative.');
+  await cur.locator('.lorerev_btn_regen').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('3/3'));
+  const vu3 = userMsg(await lastReq());
+  check('V: earlier attempts go back to the model with their own request', /<attempt n="2" user_request="Make it shorter\.\\nMention the gold marks\.">/.test(vu3) && /Third try: be creative\./.test(vu3.slice(vu3.indexOf('<regeneration_request>'))));
+  check('U: intensity persisted in settings', (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.intensity)) === 'heavy');
+
+  // ================= W. Clear chat =================
+  const dlg = () => page.locator('dialog[open]').last();
+  const sessionsBefore = await page.locator('.lorerev_session').count();
+  await page.click('#lorerev_clear');
+  await dlg().locator('.popup-button-ok').waitFor();
+  check('W: confirm mentions the unapproved proposals', /proposed change.*not been approved or rejected/.test(await dlg().textContent()));
+  await shot('37-clear-confirm.png');
+  await dlg().locator('.popup-button-cancel').click();
+  await page.waitForTimeout(500);
+  check('W: "Keep" leaves everything in place', (await page.locator('.lorerev_session').count()) === sessionsBefore && (await page.locator('dialog[open]').count()) === 1);
+  await page.click('#lorerev_clear');
+  await dlg().locator('.popup-button-ok').click();
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 0);
+  check('W: chat emptied (messages and cards)', (await page.locator('.lorerev_msg').count()) === 0 && /Pick lore entries/.test(await page.locator('#lorerev_chat').textContent()));
+  check('W: settings and selection kept', (await page.inputValue('#lorerev_intensity')) === 'heavy' && (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_selected_info')) === '5 entries selected in 4 book(s)', await page.textContent('#lorerev_selected_info'));
+  await shot('38-chat-cleared.png');
+  await fake.reset();
+  await fake.queue([{ content: '[]' }]);
+  await send('W: still works after clearing.');
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 1);
+  await page.click('#lorerev_clear'); // nothing pending -> no confirm
+  await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 0);
+  check('W: clearing with nothing pending needs no confirmation', (await page.locator('dialog[open]').count()) === 1);
 
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
 } catch (e) {

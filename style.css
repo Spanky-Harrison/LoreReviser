@@ -99,9 +99,15 @@
 .lorerev_buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .lorerev_btn_ok { border-color: #3c9a55; }
 .lorerev_btn_no { border-color: #b04040; }
-.lorerev_regen { display: flex; gap: 6px; margin-top: 6px; align-items: stretch; }
-.lorerev_regen textarea { flex: 1; resize: vertical; }
+.lorerev_regen { display: flex; gap: 6px; margin-top: 8px; align-items: stretch; }
+.lorerev_regen textarea { flex: 1; resize: vertical; min-height: 3.6em; }
+.lorerev_regen .menu_button { align-self: flex-end; }
+.lorerev_attempt_info { font-size: 0.85em; margin: 2px 0; }
+.lorerev_request { font-style: italic; }
 .lorerev_edit input, .lorerev_edit textarea { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
 .lorerev_edit label { display: block; font-size: 0.85em; opacity: 0.75; }
 .lorerev_ok_line { color: #6fcf8a; margin: 4px 0; }
 .lorerev_error_line { color: #ff8a8a; margin: 4px 0; }
+
+.lorerev_infobar { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.lorerev_infobar .menu_button { margin: 0; padding: 2px 10px; white-space: nowrap; }

@@ -2,12 +2,13 @@
 // Send builds one prompt (prompt.js), sends it on the chosen profile (revision.js) and shows the proposed
 // changes as review cards (review.js). Approving does not write to lorebooks yet (apply.js, milestone 4).
 
-import { Popup, POPUP_TYPE } from '../../../popup.js';
+import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { getLinkedBooks } from './lorebooks.js';
 import { MODULE_NAME, getSettings, DEFAULT_SYSTEM_PROMPT } from './settings.js';
 import { prepareSession, sendSession, runState, describeError } from './revision.js';
 import { renderSession } from './review.js';
 import { normalizeDepth, depthLabel } from './depth.js';
+import { INTENSITIES, normalizeIntensity } from './intensity.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -57,6 +58,8 @@ const TEMPLATE = `
     <div class="lorerev_header">
         <h3>LoreReviser</h3>
         <label>Profile <select id="lorerev_profile" class="text_pole"></select></label>
+        <label title="How much the model may rewrite. Light touch: only what must change, everything else verbatim. Balanced: a little liberty, same essence. Heavy-handed: rewrite sections as needed to fit the narrative.">Rewrite
+            <select id="lorerev_intensity" class="text_pole">${Object.entries(INTENSITIES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
         <label title="Send only the last X chat messages. 0 = whole chat. -1 = no chat at all.">Depth
             <input id="lorerev_depth" type="number" min="-1" step="1" class="text_pole"></label>
         <span id="lorerev_depth_info" class="lorerev_dim"></span>
@@ -77,7 +80,10 @@ const TEMPLATE = `
                 <div class="menu_button" id="lorerev_system_reset">Reset to default</div>
             </details>
             <div id="lorerev_chat" class="lorerev_chat"></div>
-            <div id="lorerev_selected_info" class="lorerev_dim"></div>
+            <div class="lorerev_infobar">
+                <div id="lorerev_selected_info" class="lorerev_dim"></div>
+                <div id="lorerev_clear" class="menu_button" title="Remove all messages and review cards from this window. Your settings and selection are kept.">Clear chat</div>
+            </div>
             <div class="lorerev_input">
                 <textarea id="lorerev_input" class="text_pole" rows="3"
                     placeholder="Tell LoreReviser what to update in the selected lore… (Enter to send, Shift+Enter for a new line)"></textarea>
@@ -105,6 +111,9 @@ export async function openModal() {
     const $profile = $root.find('#lorerev_profile');
     fillProfileSelect($profile, settings.profileId);
     $profile.on('change', () => { settings.profileId = String($profile.val()); save(); });
+
+    const $intensity = $root.find('#lorerev_intensity').val(normalizeIntensity(settings.intensity));
+    $intensity.on('change', () => { settings.intensity = normalizeIntensity($intensity.val()); save(); });
 
     const $depth = $root.find('#lorerev_depth').val(settings.depth);
     const updateDepthInfo = () => {
@@ -232,6 +241,21 @@ export async function openModal() {
         $chat.scrollTop(keepScroll ? top : $chat[0].scrollHeight);
     }
     redraw = renderChat;
+
+    // --- clear the chat window (messages + review cards); settings and selection stay ---
+    $root.find('#lorerev_clear').on('click', async () => {
+        if (runState.busy) { toastr.warning('A request is running. Cancel it first.', 'LoreReviser'); return; }
+        const pending = conversation.filter(m => m.role === 'session').flatMap(m => m.session.items).filter(i => i.status === 'proposed').length;
+        if (!conversation.length) return;
+        if (pending) {
+            // Approve does not write anything yet, so every proposal that is not rejected is still unsaved work.
+            const popup = new Popup(`<h3>Clear the chat?</h3><p>${pending} proposed change${pending === 1 ? ' has' : 's have'} not been approved or rejected yet and will be lost.</p>`,
+                POPUP_TYPE.CONFIRM, '', { okButton: 'Clear', cancelButton: 'Keep' });
+            if ((await popup.show()) !== POPUP_RESULT.AFFIRMATIVE) return;
+        }
+        conversation = [];
+        renderChat();
+    });
 
     /** Shows an error as a toast and as a red message in the chat window (replacing a previous error). */
     function showError(text) {

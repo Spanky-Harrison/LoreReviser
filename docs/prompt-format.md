@@ -9,7 +9,7 @@ The example below is a real request captured by the test suite (`tests/e2e-revis
 Two chat messages, plus `max_tokens` (the "Reply tokens" setting, or automatic: about 2x the size of the selected entries + 2500, between 4096 and 32000).
 The profile's preset supplies the sampler settings (temperature etc.). For a text-completion profile the two messages are turned into one string with the profile's instruct template (`ConnectionManagerRequestService.constructPrompt`; untested).
 
-1. **system** = the editable system prompt from the modal + the fixed "Reply format" rules (so editing the prompt cannot break parsing).
+1. **system** = the editable system prompt from the modal + a **"Rewrite intensity"** section (Light touch / Balanced / Heavy-handed, chosen in the modal) + the fixed "Reply format" rules (so editing the prompt cannot break parsing). The fixed rules and the default system prompt both tell the model to **maintain all current formatting** of every entry (markdown, line breaks, bracket/tag styles, field layouts, list styles, casing, macros, decorators, regex keys) unless the instructions require otherwise.
 2. **user** = these sections, in this order:
    - `<character_card>`: character and user names, description, personality, scenario, user persona.
    - `<active_lore>`: the lore that a normal send would activate right now (`getWorldInfoPrompt` dry run, scanning the whole visible chat, plus depth/AN/outlet entries). Entries that are selected for revision are **removed from this block** (they are sent once, in full, in `<entries_to_revise>`): the scan result (`checkWorldInfo`) says which entries are active by book + uid, and their exact text is taken out of the before/after text, depth groups, author's-note and outlet lists. If a text can't be located exactly, the entry's stored content is tried as a fallback, and anything that still can't be found is left as is (and logged). Entries that are not selected are never removed, even if their text is identical. A regenerate/retry request only removes the entries it lists. If nothing is left the block reads `(none active)`.
@@ -40,16 +40,24 @@ Same request, but `<entries_to_revise>` holds only that entry, plus:
 ```
 <previous_attempts entry="E2">
 <attempt n="1">{"keys": [...], "secondary_keys": [...], "content": "..."}</attempt>
-<attempt n="2" edited_by_user="true">{...}</attempt>
+<attempt n="2" edited_by_user="true" user_request="the request typed for this attempt">{...}</attempt>
 </previous_attempts>
 
 <regeneration_request>
-The user wants a new version of entry E2. Write a different, better version than the previous attempts, following this extra guidance: <your note>. Reply with a JSON array containing only entry E2.
+The user wants a new version of entry E2. Write a different, better version than the previous attempts. The user's extra request for this regeneration (follow it): <text from the box under the card> Reply with a JSON array containing only entry E2.
 </regeneration_request>
 ```
 
-The character card, lore and chat history are reused from the original Send (not recomputed), so attempts are comparable.
+The extra request comes from the always-visible box on the card (multi-line, optional); each attempt remembers the request that produced it and the model sees it again as `user_request` on the next regeneration. The rewrite intensity chosen in the modal *at that moment* applies to the regeneration (each attempt shows the intensity it was made with). The character card, lore and chat history are reused from the original Send (not recomputed), so attempts are comparable.
 For an entry that had "No changes", the request says the first pass found no change and asks for a second look.
+
+## Rewrite intensity wording (added to the system message)
+
+| Level | Text |
+|---|---|
+| Light touch | LIGHT TOUCH. Change only what MUST change to account for the new reality or narrative, for example pronouns, names, a specific physical detail, a changed status or relationship. Leave every other word, sentence and line exactly as it is, verbatim. Do not rephrase, reorder, tidy up, expand or "improve" anything that does not have to change. |
+| Balanced (default) | BALANCED. You may take a little more liberty: rephrase or extend sentences where that helps the entry reflect the new situation. Keep the essence, structure and voice of what was there, and keep information that is still true. Do not rewrite parts that are still accurate just to make them sound different. |
+| Heavy-handed | HEAVY-HANDED. Rewrite sections as much as needed so the entry fits the narrative and the user's instructions. Consider the original context and keep facts that are still true, but you are free to restructure, merge, split, reorder or replace text. The formatting rules above still apply to the layout you produce. |
 
 ## Token pre-flight
 
@@ -68,10 +76,15 @@ You will receive the character card, the lore that is currently active, the rece
 Guidelines:
 - Only change what the chat or the user's instructions support. Never invent facts, names, or events.
 - Keep information that is still true. Update or remove only what the story has made outdated or wrong.
-- Keep each entry's existing style, point of view, tense, format and rough length. Entries should stay compact; do not turn them into summaries of the whole chat.
+- Keep each entry's existing style, point of view, tense and rough length. Entries should stay compact; do not turn them into summaries of the whole chat.
+- Maintain ALL of each entry's current formatting unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles (such as [Name: ...] or <tag>), field layouts (such as "Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines and /regex/ keys. New text must follow the same layout as the text around it.
+- Follow the "Rewrite intensity" section: it says how much of the existing wording you may change.
 - Keys are the trigger words for the entry. Add keys only for names, nicknames or terms that people will really use in the chat; drop keys that are no longer correct. Keep key capitalisation natural.
 - Do not copy lore from one entry into another. The active lore is given for context only; it may contain the very entries you are revising.
 - If an entry needs no change, leave it out of your reply.
+
+## Rewrite intensity: Balanced
+BALANCED. You may take a little more liberty: rephrase or extend sentences where that helps the entry reflect the new situation. Keep the essence, structure and voice of what was there, and keep information that is still true. Do not rewrite parts that are still accurate just to make them sound different.
 
 ## Reply format (strict)
 Reply with ONE JSON array and nothing else: no commentary before or after it, no markdown code fences.
@@ -84,7 +97,8 @@ Rules:
 - "content": the complete new text of the entry (not a diff). Leave this field out if the content stays the same.
 - "keys" and "secondary_keys": the complete new list of trigger keys. Leave a field out if that list stays the same.
 - "note": one short sentence saying what you changed and why.
-- Keep {{macros}}, @@decorator lines at the start of the content, and /regex/ keys exactly as they are, unless the user's instructions say otherwise.
+- Maintain ALL current formatting of each entry unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles ([Name: ...], <tag>), field layouts ("Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines at the start of the content, and /regex/ keys. Text you add must use the same layout as the text around it. If the content has several lines or paragraphs, keep the same line structure (use 
+ in the JSON string).
 - The reply must be valid JSON: escape double quotes inside strings as \" and line breaks as \n.
 ```
 
@@ -106,8 +120,12 @@ Throne room
 </character_card>
 
 <active_lore>
+The Festival of Lanterns is held each autumn in the harbor town of Saltmere. Every household floats a paper lantern for someone they have lost.
+The festival is run by the Harbor Guild. The guild master lights the first lantern at dusk, and nobody may speak until the last one has drifted past the lighthouse.
+Children are told that the lanterns guide the dead home. Sailors say the lanterns are only there to keep the fishing boats from the rocks.
+The week after the festival, the town holds a market where the guild sells the remaining lantern paper at half price.
+The moon festival falls on the third full moon.
 Silver crowns.
-Stern but fair monarch, 54 years old.
 Behind the throne. User knows the way.
 </active_lore>
 
