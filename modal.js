@@ -290,6 +290,10 @@ export async function openModal() {
                 toastr.warning(warn, 'LoreReviser', { timeOut: 15000 });
                 conversation.splice(-1, 0, { role: 'warn', text: warn });
             }
+            if (session.context.loreBudgetHit) {
+                // Informational: the active-lore part of the prompt is what ST itself would send (cut off by its World Info budget).
+                conversation.splice(-1, 0, { role: 'warn', text: 'Note: SillyTavern\'s World Info budget was reached while working out the currently active lore, so the "active lore" part of the prompt is cut off, exactly as it would be in a normal chat message. The entries you selected are always sent in full. (This is not an error.)' });
+            }
             conversation.at(-1).text = `Waiting for "${profile.name}" (about ${t.promptTokens} prompt tokens, up to ${t.maxTokens} reply tokens)…`;
             redraw({ keepScroll: false });
 

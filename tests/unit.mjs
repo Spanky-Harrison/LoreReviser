@@ -1,7 +1,7 @@
 // Unit tests for the pure modules (parse.js, diff.js). Run: node tests/unit.mjs
 import assert from 'node:assert/strict';
 import { parseRevisionReply as P, integrityWarnings as W, sameAsOriginal } from '../parse.js';
-import { wordDiff, listDiff } from '../diff.js';
+import { blockDiff, splitBlocks, listDiff } from '../diff.js';
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('PASS:', name); };
@@ -35,19 +35,29 @@ t('no JSON', () => { const r = P('I could not do that, sorry.'); assert.equal(r.
 t('empty', () => { assert.ok(P('').error); assert.ok(P(null).error); });
 t('empty array', () => { const r = P('[]'); assert.equal(r.entries.length, 0); assert.equal(r.error, null); });
 
-t('wordDiff basics', () => {
-    const d = wordDiff('The queen is 54 years old.', 'The queen is 55 years old.');
-    assert.deepEqual(d.map(x => x.type), ['same', 'del', 'ins', 'same']);
-    assert.equal(d.map(x => x.type === 'ins' ? '' : x.text).join(''), 'The queen is 54 years old.');
-    assert.equal(d.map(x => x.type === 'del' ? '' : x.text).join(''), 'The queen is 55 years old.');
+t('blockDiff: changed sentence shows as removed block then added block', () => {
+    const o = 'The queen is stern. She rules Eldoria. She is 54 years old.';
+    const n = 'The queen is stern. She rules Eldoria. She is 55 years old and has a limp.';
+    assert.deepEqual(blockDiff(o, n, 'sentence'), [
+        { type: 'same', blocks: ['The queen is stern.', 'She rules Eldoria.'] },
+        { type: 'del', blocks: ['She is 54 years old.'] },
+        { type: 'ins', blocks: ['She is 55 years old and has a limp.'] }]);
 });
-t('wordDiff identical / empty', () => {
-    assert.deepEqual(wordDiff('a b', 'a b'), [{ type: 'same', text: 'a b' }]);
-    assert.deepEqual(wordDiff('', 'new'), [{ type: 'ins', text: 'new' }]);
+t('blockDiff: paragraphs, identical and empty', () => {
+    assert.deepEqual(blockDiff('a\nb', 'a\nb'), [{ type: 'same', blocks: ['a', 'b'] }]);
+    assert.deepEqual(blockDiff('', 'new'), [{ type: 'ins', blocks: ['new'] }]);
+    assert.deepEqual(blockDiff('old', ''), [{ type: 'del', blocks: ['old'] }]);
+    assert.deepEqual(blockDiff('a\nb\nc', 'a\nX\nY\nc'), [
+        { type: 'same', blocks: ['a'] }, { type: 'del', blocks: ['b'] }, { type: 'ins', blocks: ['X', 'Y'] }, { type: 'same', blocks: ['c'] }]);
 });
-t('wordDiff big input does not blow up', () => {
-    const a = Array.from({ length: 3000 }, (_, i) => 'w' + i).join(' '), b = Array.from({ length: 3000 }, (_, i) => 'v' + i).join(' ');
-    const d = wordDiff(a, b); assert.ok(d.length >= 2);
+t('splitBlocks keeps odd text whole', () => {
+    assert.deepEqual(splitBlocks('No end punctuation here', 'sentence'), ['No end punctuation here']);
+    assert.deepEqual(splitBlocks('He said "Go." Then left!\nNew line', 'sentence'), ['He said "Go."', 'Then left!', 'New line']);
+    assert.deepEqual(splitBlocks('@@activate\nText', 'paragraph'), ['@@activate', 'Text']);
+});
+t('blockDiff big input does not blow up', () => {
+    const a = Array.from({ length: 1500 }, (_, i) => `Line ${i}.`).join('\n'), b = a.replace('Line 700.', 'Changed.');
+    assert.ok(blockDiff(a, b).length >= 3);
 });
 t('listDiff', () => {
     assert.deepEqual(listDiff(['a', 'b'], ['b', 'c']), [{ type: 'del', text: 'a' }, { type: 'same', text: 'b' }, { type: 'ins', text: 'c' }]);
@@ -63,5 +73,27 @@ t('sameAsOriginal', () => {
     const o = { keys: ['a'], secondary: [], content: 'x' };
     assert.ok(sameAsOriginal(o, { keys: ['a'], secondary: [], content: 'x' }));
     assert.ok(!sameAsOriginal(o, { keys: ['a', 'b'], secondary: [], content: 'x' }));
+});
+t('raw newlines inside a string are accepted (very common with roleplay text)', () => {
+    const r = P('[{"id":"E1","content":"para one\n\npara two"},{"id":"E2","content":"x"}]'.replace(/\\n/g, '\n'));
+    assert.equal(r.entries.length, 2); assert.equal(r.truncated, false); assert.equal(r.skipped, 0); assert.equal(r.entries[0].content, 'para one\n\npara two');
+});
+t('unescaped inner quotes and \\\' escapes are repaired', () => {
+    const r = P('[{"id":"E1","content":"She said "run" and left. Don\\\'t follow."},{"id":"E2","content":"ok"}]');
+    assert.equal(r.entries.length, 2); assert.equal(r.skipped, 0);
+    assert.equal(r.entries[0].content, 'She said "run" and left. Don\'t follow.');
+});
+t('clean array that omits entries is NOT truncated or damaged', () => {
+    const r = P('[{"id":"E2","content":"x"}]');
+    assert.equal(r.truncated, false); assert.equal(r.skipped, 0); assert.equal(r.error, null);
+    const e = P('[]'); assert.equal(e.entries.length, 0); assert.equal(e.truncated, false); assert.equal(e.error, null);
+});
+t('truncated repaired text with raw newlines still salvages complete entries', () => {
+    const r = P('[{"id":"E1","content":"a\nb"},{"id":"E2","content":"cut off here\nand');
+    assert.equal(r.entries.length, 1); assert.equal(r.truncated, true);
+});
+t('skipped object reports its id so only that entry is flagged', () => {
+    const r = P('[{"id":"E1","content":"ok"},{"id":"E2","content": broken },{"id":"E3","content":"ok"}]');
+    assert.equal(r.entries.length, 2); assert.equal(r.skipped, 1); assert.deepEqual(r.skippedIds, ['E2']); assert.equal(r.truncated, false);
 });
 console.log(`${n} unit tests passed`);

@@ -76,7 +76,18 @@ export async function gatherContext(depth) {
     // Lore that would be active in a normal send. Dry run: no timed-effect changes, no events.
     // The scan input is newest-first, like Generate() builds it.
     let lore = '';
+    let loreBudgetHit = false;
+    // ST shows a "World info budget reached" toast from inside the scan whenever the user has "Alert On Overflow" on,
+    // even for a dry run. That toast would look like a LoreReviser error, so hide exactly that one message while we
+    // scan and read the real answer from the scan-done event instead (budget.overflowed). Always restored in `finally`.
+    const realWarning = toastr.warning;
+    const onScanDone = (args) => { if (args?.budget?.overflowed) loreBudgetHit = true; };
     try {
+        toastr.warning = function (message, title, ...rest) {
+            if (typeof message === 'string' && /^World info budget reached/i.test(message)) return undefined;
+            return realWarning.call(this, message, title, ...rest);
+        };
+        ctx.eventSource.on(ctx.eventTypes.WORLDINFO_SCAN_DONE, onScanDone);
         const scan = visible.map(m => `${m.name}: ${m.mes}`).reverse();
         const wi = await getWorldInfoPrompt(scan, ctx.maxContext, true, {
             personaDescription: card.persona ?? '', characterDescription: card.description ?? '',
@@ -92,9 +103,12 @@ export async function gatherContext(depth) {
         lore = sub(parts.join('\n\n'));
     } catch (e) {
         console.warn('[LoreReviser] could not compute active lore', e);
+    } finally {
+        toastr.warning = realWarning;
+        ctx.eventSource.removeListener(ctx.eventTypes.WORLDINFO_SCAN_DONE, onScanDone);
     }
 
-    return { card: cardText, lore, history, messagesUsed: shown.length, messagesTotal: visible.length };
+    return { card: cardText, lore, loreBudgetHit, history, messagesUsed: shown.length, messagesTotal: visible.length };
 }
 
 /** One entry as shown to the model. Keys are JSON arrays so commas inside regex keys stay unambiguous. */
@@ -173,5 +187,20 @@ export async function resolveReplyTokens(settings, items) {
     const { getTokenCountAsync } = SillyTavern.getContext();
     const text = items.map(i => i.original.content + JSON.stringify(i.original.keys) + JSON.stringify(i.original.secondary)).join('\n');
     const entryTokens = await getTokenCountAsync(text);
-    return Math.min(16000, Math.max(1500, Math.ceil(entryTokens * 1.3) + 500));
+    // Generous on purpose: the reply has to hold every changed entry in full (JSON-escaped), and "thinking" models spend
+    // part of this budget before they write the answer. Unused budget costs nothing.
+    return Math.min(32000, Math.max(4096, Math.ceil(entryTokens * 2) + 2500));
+}
+
+/**
+ * Proves that every selected entry made it into the prompt in full. Selected entries are read straight from the
+ * lorebook files with loadWorldInfo and put into <entries_to_revise>; they never go through World Info activation,
+ * so ST's World Info budget, recursion limits etc. cannot drop or shorten them (those only shape <active_lore>).
+ * @returns {{requested: string[], sent: string[], missing: string[]}}
+ */
+export function verifyEntriesSent(items, messages) {
+    const user = messages.find(m => m.role === 'user')?.content ?? '';
+    const block = user.slice(user.indexOf('<entries_to_revise>'), user.indexOf('</entries_to_revise>'));
+    const sent = items.filter(i => block.includes(`<entry id="${i.id}" `) && block.includes(i.original.content) && block.includes(JSON.stringify(i.original.keys)));
+    return { requested: items.map(i => i.id), sent: sent.map(i => i.id), missing: items.filter(i => !sent.includes(i)).map(i => i.id) };
 }

@@ -1,5 +1,5 @@
 // Fake OpenAI-compatible server for tests. Replies come from a queue set by the test.
-//   POST /__queue    body: [{content, finish_reason?, status?, delayMs?}, ...]   replaces the queue
+//   POST /__queue    body: [{content, finish_reason?, usage?, status?, delayMs?}, ...]   replaces the queue
 //   GET  /__requests list of request bodies received on /v1/chat/completions
 //   POST /__reset    clears queue and request log
 // In `content`, {{id:Some Title}} is replaced by the entry id (E1, E2...) that has that title in the request.
@@ -39,7 +39,7 @@ http.createServer(async (req, res) => {
         return json(200, {
             id: 'fake-1', object: 'chat.completion', created: 0, model: body.model ?? 'fake-model',
             choices: [{ index: 0, message: { role: 'assistant', content: fill(next.content ?? '[]', body) }, finish_reason: next.finish_reason ?? 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+            usage: next.usage ?? { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         });
     }
     if (req.url?.endsWith('/models')) return json(200, { data: [{ id: 'fake-model' }] });

@@ -3,10 +3,10 @@
 // All state lives on the session/item objects (see revision.js), so a card can be re-drawn at any time.
 
 import { splitKeywordsAndRegexes } from '../../../world-info.js';
-import { integrityWarnings } from './parse.js';
-import { wordDiff, listDiff } from './diff.js';
+import { integrityWarnings, sameAsOriginal } from './parse.js';
+import { blockDiff, listDiff } from './diff.js';
 import { applyApproval } from './apply.js';
-import { regenerateItem, describeError, runState } from './revision.js';
+import { regenerateItem, retryMissing, describeEnd, describeError, runState } from './revision.js';
 
 const $el = (tag, cls, text) => { const e = $(`<${tag}>`); if (cls) e.addClass(cls); if (text !== undefined) e.text(text); return e; };
 const currentAttempt = (item) => item.attempts[item.index];
@@ -20,13 +20,57 @@ function keyChips(label, oldList, newList) {
     return row;
 }
 
-/** Renders text as old / new / diff. */
+/**
+ * Renders the content in one of four views. All of them show whole blocks, never word-level marks:
+ *  compare: old and new as two columns (stacked when narrow), changed paragraphs tinted
+ *  changes: unchanged sentences dimmed, each changed run as a removed block followed by an added block
+ *  new / old: just that text
+ */
 function contentView(item, attempt, view) {
-    const box = $el('div', 'lorerev_text');
-    if (view === 'old') return box.text(item.original.content || '(empty)');
-    if (view === 'new') return box.text(attempt.content || '(empty)');
-    for (const op of wordDiff(item.original.content, attempt.content)) {
-        box.append(op.type === 'same' ? document.createTextNode(op.text) : $el('span', `lorerev_${op.type}`, op.text));
+    const oldText = item.original.content ?? '', newText = attempt.content ?? '';
+    if (view === 'old') return $el('div', 'lorerev_text', oldText || '(empty)');
+    if (view === 'new') return $el('div', 'lorerev_text', newText || '(empty)');
+    if (view === 'compare') {
+        // Aligned rows: unchanged paragraphs span the full width and are dimmed (long runs are collapsed);
+        // each changed region is one row with the removed paragraphs on the left and the added ones on the right.
+        const ops = blockDiff(oldText, newText, 'paragraph');
+        const wrap = $el('div', 'lorerev_cmp lorerev_text');
+        if (!ops.some(o => o.type !== 'same')) return wrap.append($el('div', 'lorerev_dim', 'The text is unchanged (only keys differ).'));
+        wrap.append($el('div', 'lorerev_row lorerev_col_title').append($el('div', '', 'Old'), $el('div', '', 'New')));
+        const para = (text, mark) => $el('div', `lorerev_para${mark ? ` lorerev_para_${mark}` : ''}`, text);
+        for (let k = 0; k < ops.length; k++) {
+            const op = ops[k];
+            if (op.type === 'same') {
+                const run = $el('div', 'lorerev_same');
+                const show = (blocks) => blocks.forEach(p => run.append(para(p)));
+                if (op.blocks.length <= 3) show(op.blocks);
+                else {
+                    const hidden = op.blocks.slice(1, -1);
+                    const mid = $el('div', 'lorerev_collapsed', `… ${hidden.length} unchanged paragraphs (click to show) …`);
+                    mid.on('click', () => { mid.replaceWith(...hidden.map(p => para(p))); });
+                    run.append(para(op.blocks[0]), mid, para(op.blocks.at(-1)));
+                }
+                wrap.append(run);
+                continue;
+            }
+            // pair a removed run with the added run that follows it (blockDiff always emits del before ins)
+            const next = ops[k + 1];
+            const dels = op.type === 'del' ? op.blocks : [];
+            const inss = op.type === 'ins' ? op.blocks : (next?.type === 'ins' ? next.blocks : []);
+            const cell = (blocks, mark, empty) => $el('div', 'lorerev_cell').append(...(blocks.length ? blocks.map(p => para(p, mark)) : [$el('div', 'lorerev_dim', empty)]));
+            wrap.append($el('div', 'lorerev_row').append(cell(dels, 'del', '(nothing removed)'), cell(inss, 'ins', '(nothing added)')));
+            if (op.type === 'del' && next?.type === 'ins') k++; // the added run was shown in this row
+        }
+        return wrap;
+    }
+    // changes
+    const box = $el('div', 'lorerev_text lorerev_changes');
+    const ops = blockDiff(oldText, newText, 'sentence');
+    if (!ops.some(o => o.type !== 'same')) return box.append($el('div', 'lorerev_dim', 'The text is unchanged (only keys differ).'));
+    for (const op of ops) {
+        const text = op.blocks.join(' ');
+        box.append(op.type === 'same' ? $el('div', 'lorerev_blk lorerev_blk_same', text)
+            : $el('div', `lorerev_blk lorerev_blk_${op.type}`, text).attr('data-mark', op.type === 'del' ? 'Removed' : 'Added'));
     }
     return box;
 }
@@ -54,10 +98,46 @@ export function renderSession(session, hooks = {}) {
     function drawNotes() {
         $notes.empty();
         const p = session.parse;
-        if (p?.truncated) $notes.append($el('div', 'lorerev_warn',
-            `The reply was cut off (probably by the reply token limit, ${session.maxTokens}). Recovered ${p.recovered} complete entr${p.recovered === 1 ? 'y' : 'ies'}; the rest are marked "not returned". Raise "Reply tokens", or select fewer entries.`));
-        if (p?.skipped) $notes.append($el('div', 'lorerev_warn', `${p.skipped} part(s) of the reply were not valid JSON and were skipped.`));
+        if (p?.truncated) {
+            const how = p.info?.lengthHit ? 'The reply was cut off by the reply token limit' : 'The reply stopped in the middle of the JSON';
+            $notes.append($el('div', 'lorerev_warn',
+                `${how} (${p.info ? describeEnd(p.info, session.maxTokens) : `${session.maxTokens} tokens allowed`}). Recovered ${p.recovered} complete entr${p.recovered === 1 ? 'y' : 'ies'}; the rest are marked "not returned". `
+                + (p.info?.reasoningTokens ? 'Much of the budget went into thinking; raise "Reply tokens". ' : 'Raise "Reply tokens", or select fewer entries. ')
+                + 'Use "Retry missing entries" to ask again for just those.'));
+        }
+        if (p?.skipped) $notes.append($el('div', 'lorerev_warn', `${p.skipped} part(s) of the reply were not valid JSON and could not be read (see "Raw reply").`));
+        if (p?.repaired && !p.error) $notes.append($el('div', 'lorerev_dim', 'The model\'s JSON had formatting slips (raw line breaks or unescaped quotes); they were fixed automatically. Check that the text looks right.'));
         if (p?.unknownIds?.length) $notes.append($el('div', 'lorerev_warn', `The reply mentioned unknown entry ids and they were ignored: ${p.unknownIds.join(', ')}`));
+        const missing = session.items.filter(i => i.status === 'missing').length;
+        if (missing) $notes.append($el('div', 'lorerev_buttons').append(
+            $el('div', 'menu_button lorerev_btn_retry', `Retry missing entries (${missing})`).on('click', () => retryAll())));
+    }
+
+    /** One request for all "not returned" entries. */
+    async function retryAll() {
+        if (runState.busy) { toastr.warning('Another request is still running.', 'LoreReviser'); return; }
+        const items = session.items.filter(i => i.status === 'missing');
+        if (!items.length) return;
+        const abort = new AbortController();
+        runState.busy = true;
+        for (const it of items) { it.status = 'loading'; it.error = null; it.abort = abort; }
+        redrawAll();
+        try {
+            await retryMissing(session, items, abort.signal);
+        } catch (e) {
+            for (const it of items) {
+                it.status = 'missing';
+                it.error = abort.signal.aborted ? 'Retry cancelled.' : `Retry failed: ${describeError(e)}`;
+            }
+            if (!abort.signal.aborted) toastr.error(`Retry failed: ${describeError(e)}`, 'LoreReviser');
+        } finally {
+            runState.busy = false; for (const it of items) it.abort = null;
+            redrawAll();
+        }
+    }
+    function redrawAll() {
+        $cards.empty().append(session.items.map(buildCard));
+        drawHead(); drawNotes(); hooks.onChange?.();
     }
 
     // ----- one card -----
@@ -69,7 +149,7 @@ export function renderSession(session, hooks = {}) {
     }
 
     function buildCard(item) {
-        item.ui ??= { view: 'diff', editing: false, regenOpen: false, regenText: '' };
+        item.ui ??= { view: 'compare', editing: false, regenOpen: false, regenText: '' };
         const ui = item.ui;
         const $card = $el('div', `lorerev_card lorerev_status_${item.status}`).attr('data-id', item.id);
         const title = $el('div', 'lorerev_card_title').append(
@@ -88,64 +168,86 @@ export function renderSession(session, hooks = {}) {
         }
         if (item.status === 'unchanged' || item.status === 'missing') {
             $card.append($el('div', 'lorerev_dim', item.status === 'missing'
-                ? 'The model did not return this entry, and the reply was cut off or damaged, so it is unknown whether it needs changes.'
+                ? (item.missingNote ?? 'The model did not return this entry and the reply was damaged, so it is unknown whether it needs changes.')
                 : 'The model left this entry as it is.'));
-            $card.append(buttonsRow(item, ['regen']));
+            $card.append(ui.editing ? editForm(item, null) : buttonsRow(item, ['edit', 'regen']));
             return $card;
         }
 
         const attempt = currentAttempt(item);
+        if (attempt?.edited) title.find('.lorerev_pill').last().after($el('span', 'lorerev_pill lorerev_pill_edited', 'Edited by you'));
 
-        // --- decided ---
-        if (item.status === 'approved' || item.status === 'rejected') {
-            if (item.status === 'approved') {
-                $card.append($el('div', 'lorerev_ok_line', item.applyMessage ?? 'Approved.'));
-            }
-            $card.append(buttonsRow(item, ['undo']));
-            return $card;
-        }
-
-        // --- proposed: pager, note, warnings, keys, content ---
-        if (item.attempts.length > 1) {
+        // --- proposed / approved / rejected: pager (proposed only), note, warnings, keys, content ---
+        if (item.status === 'proposed' && item.attempts.length > 1) {
             const pager = $el('div', 'lorerev_pager').append(
                 $el('span', 'menu_button lorerev_pg', '‹').on('click', () => { item.index = (item.index + item.attempts.length - 1) % item.attempts.length; rerender(item); }),
                 $el('span', '', `${item.index + 1}/${item.attempts.length}`),
                 $el('span', 'menu_button lorerev_pg', '›').on('click', () => { item.index = (item.index + 1) % item.attempts.length; rerender(item); }));
             title.append(pager);
         }
+        if (item.status === 'approved') $card.append($el('div', 'lorerev_ok_line', item.applyMessage ?? 'Approved.'));
+        if (item.reapprove) $card.append($el('div', 'lorerev_warn', 'You edited this after approving it. Approve it again to confirm your edited version.'));
         if (attempt.note) $card.append($el('div', 'lorerev_note', attempt.note));
-        if (attempt.edited) $card.append($el('div', 'lorerev_dim', '(edited by you)'));
         for (const w of integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));
 
-        if (ui.editing) {
-            $card.append(editForm(item, attempt));
-            return $card;
-        }
+        if (ui.editing) { $card.append(editForm(item, attempt)); return $card; }
 
         $card.append(keyChips('Keys', item.original.keys, attempt.keys));
         if (item.original.secondary.length || attempt.secondary.length) $card.append(keyChips('Secondary keys', item.original.secondary, attempt.secondary));
-        const views = $el('div', 'lorerev_views');
-        for (const [v, label] of [['diff', 'Changes'], ['new', 'New'], ['old', 'Old']]) {
-            views.append($el('span', `lorerev_view${ui.view === v ? ' lorerev_view_on' : ''}`, label).on('click', () => { ui.view = v; rerender(item); }));
-        }
-        $card.append(views, contentView(item, attempt, ui.view), buttonsRow(item, ['approve', 'reject', 'edit', 'regen']));
+        $card.append(viewToggle(item), contentView(item, attempt, ui.view));
+        $card.append(buttonsRow(item, ({
+            proposed: ['approve', 'reject', 'edit', 'regen'], approved: ['undo', 'edit'], rejected: ['undo', 'edit', 'regen'],
+        })[item.status]));
         return $card;
     }
 
-    /** Inline editor for the current attempt. */
+    function viewToggle(item) {
+        const views = $el('div', 'lorerev_views');
+        for (const [v, label] of [['compare', 'Compare'], ['changes', 'Changes'], ['new', 'New'], ['old', 'Old']]) {
+            views.append($el('span', `lorerev_view${item.ui.view === v ? ' lorerev_view_on' : ''}`, label).on('click', () => { item.ui.view = v; rerender(item); }));
+        }
+        return views;
+    }
+
+    /**
+     * Inline editor. Edits go straight into the pending proposal (the attempt on screen), so what is in the boxes
+     * when you press "Save edit" is exactly what Approve will hand to the writer later. Works in every state:
+     * after Approve/Reject the card goes back to "Proposed" and needs approving again. For entries the model left
+     * unchanged (attempt = null) it creates a proposal written by you.
+     */
     function editForm(item, attempt) {
+        const base = attempt ?? item.original;
         const $f = $el('div', 'lorerev_edit');
-        const keys = $('<input type="text" class="text_pole">').val(attempt.keys.join(', '));
-        const sec = $('<input type="text" class="text_pole">').val(attempt.secondary.join(', '));
-        const content = $('<textarea class="text_pole" rows="10">').val(attempt.content);
-        $f.append($el('label', '', 'Keys (comma separated; /regex/ allowed)'), keys, $el('label', '', 'Secondary keys'), sec, $el('label', '', 'Content'), content);
-        $f.append($el('div', 'lorerev_buttons').append(
-            $el('div', 'menu_button', 'Save edit').on('click', () => {
-                Object.assign(attempt, { keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: String(content.val()), edited: true });
-                item.ui.editing = false; rerender(item);
-            }),
-            $el('div', 'menu_button', 'Cancel').on('click', () => { item.ui.editing = false; rerender(item); })));
-        return $f;
+        const keys = $('<input type="text" class="text_pole lorerev_ed_keys">').val(base.keys.join(', '));
+        const sec = $('<input type="text" class="text_pole lorerev_ed_sec">').val(base.secondary.join(', '));
+        const content = $('<textarea class="text_pole lorerev_ed_content" rows="12">').val(base.content);
+        $f.append($el('label', '', 'Keys (comma separated; /regex/ allowed)'), keys, $el('label', '', 'Secondary keys'), sec,
+            $el('label', '', 'Content: exactly this text is what will be saved when you approve'), content);
+        const read = () => ({ keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: String(content.val()) });
+        const afterEdit = () => {
+            if (item.status === 'approved') item.reapprove = true;
+            item.status = 'proposed'; item.applyMessage = null; item.ui.editing = false; rerender(item);
+        };
+        const buttons = $el('div', 'lorerev_buttons');
+        buttons.append($el('div', 'menu_button lorerev_btn_save', 'Save edit').on('click', () => {
+            const v = read();
+            if (!attempt) {
+                if (sameAsOriginal(item.original, v)) { toastr.info('Nothing was changed.', 'LoreReviser'); item.ui.editing = false; return rerender(item); }
+                item.attempts.push({ ...v, note: 'Written by you: the model had left this entry unchanged.', edited: true, manual: true });
+                item.index = item.attempts.length - 1;
+            } else {
+                // remember what the model wrote so the edit can be undone
+                if (!attempt.modelVersion && !attempt.manual) attempt.modelVersion = { keys: [...attempt.keys], secondary: [...attempt.secondary], content: attempt.content };
+                Object.assign(attempt, v);
+                const mv = attempt.modelVersion;
+                attempt.edited = attempt.manual || !(mv && sameAsOriginal(mv, v));
+            }
+            afterEdit();
+        }), $el('div', 'menu_button', 'Cancel').on('click', () => { item.ui.editing = false; rerender(item); }));
+        if (attempt?.modelVersion) buttons.append($el('div', 'menu_button lorerev_btn_reset', "Reset to the model's version").on('click', () => {
+            Object.assign(attempt, structuredClone(attempt.modelVersion), { edited: false }); delete attempt.modelVersion; afterEdit();
+        }));
+        return $f.append(buttons);
     }
 
     function buttonsRow(item, which) {
@@ -154,13 +256,13 @@ export function renderSession(session, hooks = {}) {
         const btn = (label, cls, fn) => row.append($el('div', `menu_button ${cls ?? ''}`, label).on('click', fn));
         if (which.includes('approve')) btn('Approve', 'lorerev_btn_ok', async () => {
             const attempt = currentAttempt(item);
-            item.status = 'approved'; item.approvedAttempt = item.index;
+            item.status = 'approved'; item.approvedAttempt = item.index; item.reapprove = false;
             item.applyMessage = (await applyApproval(item, attempt)).message; // stub until milestone 4
             rerender(item);
         });
         if (which.includes('reject')) btn('Reject', 'lorerev_btn_no', () => { item.status = 'rejected'; rerender(item); });
         if (which.includes('edit')) btn('Edit', '', () => { ui.editing = true; rerender(item); });
-        if (which.includes('undo')) btn('Undo', '', () => { item.status = 'proposed'; rerender(item); });
+        if (which.includes('undo')) btn('Undo', '', () => { item.status = 'proposed'; item.reapprove = false; item.applyMessage = null; rerender(item); });
         if (which.includes('regen')) btn('Regenerate…', '', () => { ui.regenOpen = !ui.regenOpen; rerender(item); });
         if (!(which.includes('regen') && ui.regenOpen)) return row;
 

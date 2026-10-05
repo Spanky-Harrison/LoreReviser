@@ -77,8 +77,24 @@
 .lorerev_view { cursor: pointer; padding: 0 10px; border-radius: 10px; opacity: 0.65; border: 1px solid var(--SmartThemeBorderColor); font-size: 0.85em; }
 .lorerev_view_on { opacity: 1; background: rgba(255, 255, 255, 0.15); }
 .lorerev_text { white-space: pre-wrap; padding: 6px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.2); line-height: 1.45; }
-.lorerev_ins { background: rgba(60, 160, 90, 0.35); border-radius: 3px; }
-.lorerev_del { background: rgba(200, 60, 60, 0.3); text-decoration: line-through; border-radius: 3px; }
+.lorerev_pill_edited { background: rgba(200, 140, 40, 0.6); }
+.lorerev_cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 8px; margin-top: 4px; }
+.lorerev_cmp { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.lorerev_row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 8px; }
+.lorerev_col_title { font-size: 0.8em; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.05em; }
+.lorerev_cell { min-width: 0; }
+.lorerev_text.lorerev_cmp { white-space: normal; }
+.lorerev_same .lorerev_para { opacity: 0.55; }
+.lorerev_collapsed { cursor: pointer; text-align: center; font-size: 0.85em; opacity: 0.7; padding: 2px; border: 1px dashed var(--SmartThemeBorderColor); border-radius: 4px; margin: 3px 0; }
+.lorerev_para { padding: 3px 6px; margin: 3px 0; border-left: 3px solid transparent; border-radius: 3px; }
+.lorerev_para_del { background: rgba(200, 60, 60, 0.22); border-left-color: #c84040; }
+.lorerev_para_ins { background: rgba(60, 160, 90, 0.25); border-left-color: #3c9a55; }
+.lorerev_changes { white-space: normal; }
+.lorerev_blk { padding: 3px 8px; margin: 4px 0; border-radius: 4px; }
+.lorerev_blk_same { opacity: 0.6; }
+.lorerev_blk_del { background: rgba(200, 60, 60, 0.22); border-left: 3px solid #c84040; }
+.lorerev_blk_ins { background: rgba(60, 160, 90, 0.25); border-left: 3px solid #3c9a55; }
+.lorerev_blk_del::before, .lorerev_blk_ins::before { content: attr(data-mark) ': '; font-size: 0.75em; font-weight: bold; opacity: 0.8; text-transform: uppercase; }
 .lorerev_buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .lorerev_btn_ok { border-color: #3c9a55; }
 .lorerev_btn_no { border-color: #b04040; }

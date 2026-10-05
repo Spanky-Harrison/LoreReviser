@@ -27,6 +27,35 @@ function cleanup(raw) {
     return start < 0 ? '' : text.slice(start).trim();
 }
 
+/**
+ * Fixes the usual ways models break JSON strings, without touching the structure:
+ *  - raw newlines/tabs inside a string ("content": "line one<newline>line two"), which JSON.parse rejects
+ *  - invalid escapes such as \' or \&
+ *  - unescaped double quotes inside a string (a quote only ends a string if the next non-space character is , } ] or :)
+ * A string still open at the very end is left open (that is a real cut-off).
+ */
+export function repairJson(text) {
+    let out = '', inString = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (!inString) { out += ch; if (ch === '"') inString = true; continue; }
+        if (ch === '\\') {
+            const next = text[i + 1];
+            if (next === undefined) { out += '\\\\'; continue; }
+            if ('"\\/bfnrt'.includes(next) || (next === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6)))) { out += ch + next; i++; }
+            else { out += next === "'" ? "'" : `\\\\${next}`; i++; } // \' -> '   other: keep the backslash literally
+            continue;
+        }
+        if (ch === '"') {
+            const rest = text.slice(i + 1).match(/^\s*(.)/);
+            if (!rest || ',}]:'.includes(rest[1])) { inString = false; out += ch; } else out += '\\"';
+            continue;
+        }
+        if (ch === '\n') out += '\\n'; else if (ch === '\r') out += '\\r'; else if (ch === '\t') out += '\\t'; else out += ch;
+    }
+    return out;
+}
+
 /** JSON.parse that also forgives trailing commas. Returns undefined on failure. */
 function tryParse(text) {
     try { return JSON.parse(text); } catch { /* fall through */ }
@@ -48,7 +77,7 @@ function toArray(value) {
  * Stops at the closing ] of the array. Reports whether the text ended while still inside the array/object.
  */
 function salvage(text) {
-    const result = { entries: [], truncated: false, skipped: 0 };
+    const result = { entries: [], truncated: false, skipped: 0, skippedIds: [] };
     // Start inside the entries array if there is one ("[{...}" or {"entries":[{...}).
     let i = text.startsWith('[') ? 1 : (text.startsWith('{') && /^\{\s*"(entries|revisions|results)"\s*:\s*\[/.test(text) ? text.indexOf('[') + 1 : 0);
     let depth = 0, objStart = -1, inString = false, escaped = false, closedArray = false;
@@ -66,7 +95,12 @@ function salvage(text) {
             depth--;
             if (depth === 0) {
                 const obj = tryParse(text.slice(objStart, i + 1));
-                if (obj && typeof obj === 'object') result.entries.push(obj); else result.skipped++;
+                if (obj && typeof obj === 'object') result.entries.push(obj);
+                else {
+                    result.skipped++;
+                    const m = text.slice(objStart, i + 1).match(/"id"\s*:\s*"?\s*(E\d+)/i);
+                    if (m) result.skippedIds.push(m[1].toUpperCase());
+                }
                 objStart = -1;
             }
         } else if (ch === ']' && depth === 0) { closedArray = true; break; }
@@ -81,21 +115,25 @@ function salvage(text) {
  * @returns {ParseResult}
  */
 export function parseRevisionReply(raw) {
-    const text = cleanup(raw);
-    if (!text) return { entries: [], truncated: false, skipped: 0, error: 'The reply contains no JSON.' };
+    const cleaned = cleanup(raw);
+    if (!cleaned) return { entries: [], truncated: false, skipped: 0, skippedIds: [], repaired: false, error: 'The reply contains no JSON.' };
+    const attempts = [[cleaned, false], [repairJson(cleaned), true]];
 
-    // 1. Whole text is valid JSON (optionally with chatter after the closing bracket)
-    for (const candidate of [text, text.slice(0, Math.max(text.lastIndexOf(']'), text.lastIndexOf('}')) + 1)]) {
-        const arr = toArray(tryParse(candidate));
-        if (arr) return { entries: arr.filter(e => e && typeof e === 'object'), truncated: false, skipped: 0, error: null };
+    // 1. Whole text is valid JSON (optionally with chatter after the closing bracket), as sent or after string repair
+    for (const [text, repaired] of attempts) {
+        for (const candidate of [text, text.slice(0, Math.max(text.lastIndexOf(']'), text.lastIndexOf('}')) + 1)]) {
+            const arr = toArray(tryParse(candidate));
+            if (arr) return { entries: arr.filter(e => e && typeof e === 'object'), truncated: false, skipped: 0, skippedIds: [], repaired: repaired && text !== cleaned, error: null };
+        }
     }
 
-    // 2. Broken or cut-off JSON: keep every complete object
-    const s = salvage(text);
+    // 2. Broken or cut-off JSON: keep every complete object (string repair applied, so one bad quote doesn't wreck the rest)
+    const s = salvage(attempts[1][0]);
+    const repaired = attempts[1][0] !== cleaned;
     if (!s.entries.length) {
-        return { ...s, error: s.truncated ? 'The reply was cut off before the first complete entry.' : 'The reply is not valid JSON.' };
+        return { ...s, repaired, error: s.truncated ? 'The reply was cut off before the first complete entry.' : 'The reply is not valid JSON.' };
     }
-    return { ...s, error: null };
+    return { ...s, repaired, error: null };
 }
 
 const isRegexKey = (k) => /^\/.+\/[a-z]*$/i.test(k);

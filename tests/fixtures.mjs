@@ -28,7 +28,8 @@ await post('/api/worldinfo/edit', { name: 'Chat Lore', data: book(
   entry(0, 'The Missing Heir', ['heir'], 'Prince Aldric vanished last winter.'),
   entry(1, 'Secret Passage', ['passage'], '@@activate\nBehind the throne. {{user}} knows the way.', { keysecondary: ['throne'] })) });
 await post('/api/worldinfo/edit', { name: 'Persona Lore', data: book(
-  entry(0, 'Traveler Backstory', ['traveler'], 'You come from the south.')) });
+  entry(1, 'Festival of Lanterns', ['festival'], 'The Festival of Lanterns is held each autumn in the harbor town of Saltmere. Every household floats a paper lantern for someone they have lost.\nThe festival is run by the Harbor Guild. The guild master lights the first lantern at dusk, and nobody may speak until the last one has drifted past the lighthouse.\nChildren are told that the lanterns guide the dead home. Sailors say the lanterns are only there to keep the fishing boats from the rocks.\nThe week after the festival, the town holds a market where the guild sells the remaining lantern paper at half price.'),
+  entry(0, 'Traveler Backstory', ['traveler'], 'You grew up in the fishing village of Saltmere, the youngest of five children. Your father mended nets and your mother sold smoked eel at the harbor market. You learned to read from the tide tables nailed to the harbor wall.\nAt seventeen you left for the capital to apprentice with a cartographer. You are quietly proud of your maps, though you rarely show them to anyone. You distrust nobles and carry your father\'s brass compass everywhere.')) });
 await post('/api/worldinfo/edit', { name: 'The Wishing Game - Frankie', data: book(
   entry(0, 'Frankie', ['Frankie'], 'Runs the wishing game.'),
   entry(1, 'The Wishing Well', ['well'], 'Grants one wish per night.')) });
