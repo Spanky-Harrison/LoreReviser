@@ -57,12 +57,14 @@ export function contentView(item, attempt, view) {
         }
         return wrap;
     }
-    // changes
+    // changes: sentence-level blocks, one per line (not space-joined into a single blob), so
+    // multi-paragraph lore stays readable and newlines are preserved via white-space: pre-wrap.
     const box = $el('div', 'lorerev_text lorerev_changes');
     const ops = blockDiff(oldText, newText, 'sentence');
     if (!ops.some(o => o.type !== 'same')) return box.append($el('div', 'lorerev_dim', 'The text is unchanged (only keys differ).'));
     for (const op of ops) {
-        const text = op.blocks.join(' ');
+        // Join with newlines so each sentence/line stays on its own row (was: join(' ') which flattened everything).
+        const text = op.blocks.join('\n');
         box.append(op.type === 'same' ? $el('div', 'lorerev_blk lorerev_blk_same', text)
             : $el('div', `lorerev_blk lorerev_blk_${op.type}`, text).attr('data-mark', op.type === 'del' ? 'Removed' : 'Added'));
     }

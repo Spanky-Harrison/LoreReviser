@@ -13,7 +13,7 @@ import { INTENSITIES, normalizeIntensity } from './intensity.js';
 import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
 import { budgetNote } from './budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
-import { openHistory } from './history.js';
+import { openHistory, openHistoryPicker } from './history.js';
 import { getArchiveIndex, relinkArchive } from './archive.js';
 import { findOrphans } from './archive-core.js';
 
@@ -79,7 +79,9 @@ const TEMPLATE = `
     </div>
     <div class="lorerev_body">
         <div class="lorerev_sidebar">
-            <div class="lorerev_sidebar_title">Linked lorebooks</div>
+            <div class="lorerev_sidebar_title">Linked lorebooks
+                <div id="lorerev_top_hist" class="menu_button" title="Open History for a lorebook that has saved changes (works even with an empty chat / no review cards)">History</div>
+            </div>
             <div id="lorerev_books"></div>
             <div id="lorerev_orphans"></div>
         </div>
@@ -340,6 +342,8 @@ export async function openModal() {
         books = await getLinkedBooks();
         renderBooks();
     }
+
+    $root.find('#lorerev_top_hist').on('click', () => openHistoryPicker({ onRestore: refreshBooks }));
 
     // --- orphaned history files: index entries whose lorebook no longer exists (renamed or deleted) ---
     const $orphans = $root.find('#lorerev_orphans');
