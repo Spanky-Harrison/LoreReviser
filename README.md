@@ -3,7 +3,7 @@
 A SillyTavern extension that reads and updates lorebooks to reflect story and character changes.
 See [PLAN.md](PLAN.md) for the design and milestones, and [docs/milestone1-findings.md](docs/milestone1-findings.md) for the SillyTavern API research.
 
-**Status: milestone 3 (revision and review).** Send asks the model to revise the selected entries and shows the proposals for review. **Approve only marks an entry as approved: nothing is written to your lorebooks yet** (writing and the archive come in milestone 4). Tested with a scripted fake model; not yet with a real model.
+**Status: milestone 4 (saving, History and Restore).** Send asks the model to revise the selected entries and shows the proposals for review. **Approve saves the change into your lorebook**, and the old version is kept in a History file, so every change can be looked at and undone later. Tested with a scripted fake model; not yet with a real model.
 
 Requires SillyTavern **1.19.0 or newer** (the Connection Manager extension must be enabled, which it is by default).
 
@@ -28,10 +28,33 @@ Requires SillyTavern **1.19.0 or newer** (the Connection Manager extension must 
 ## How a revision works
 1. Pick entries in the sidebar, write what should change, press Send. One request goes to the chosen profile with your system prompt, the character card, the lore that is active right now (without the entries you selected: an entry that is both selected and active is sent only once, in full, with the entries to revise; the chat shows a note such as "2 selected entries were already active; sent once"), the last X chat messages (Depth; none at -1), the full text and keys of every selected entry, and your instructions. Exact format: [docs/prompt-format.md](docs/prompt-format.md).
 2. The model answers with the entries it changed. Each shows up as a card with the key changes and a block-level comparison. **Changes** (the default) lists unchanged sentences dimmed, then removed and added blocks; **Full Compare** shows old and new side by side (stacked on narrow screens) with unchanged paragraphs dimmed and each changed region as a removed block next to the added block; **New** / **Old** show the plain text. There is no word-by-word marking. Entries the model did not change are shown as "No changes". After a regenerate, swipe arrows with an n/N counter page between attempts, and the modal remembers which attempt you were on when you close and reopen it.
-3. Per card: **Approve** (marks it; nothing is saved yet), **Reject**, **Edit** (change the keys and text yourself; available on every card, also after Approve/Reject and on "No changes" entries; the card shows "Edited by you", an edit after approval needs approving again, and the text in the edit box is exactly what Approve will save), **Regenerate** (a multi-line box is always shown under the card: type an extra request for that regeneration if you like; the model sees its earlier attempts and their requests, each attempt remembers its request and rewrite intensity, and you can page between attempts with ‹ ›).
+3. Per card: **Approve** (saves it to the lorebook, see "Saving and History" below), **Reject**, **Edit** (change the keys and text yourself; available on every card, also after Approve/Reject and on "No changes" entries; the card shows "Edited by you", an edit after approval needs approving again, and the text in the edit box is exactly what Approve will save), **Regenerate** (a multi-line box is always shown under the card: type an extra request for that regeneration if you like; the model sees its earlier attempts and their requests, each attempt remembers its request and rewrite intensity, and you can page between attempts with ‹ ›).
+   Cards can be folded: click a card's header line (or the small arrow at its left) to hide or show its details; a folded card shows just the entry name, its book and its status. Approved cards fold up by themselves, so the ones still waiting for a decision stand out; Undo, or a click on the header, opens it again. Folding is remembered while the page is open, also when you close and reopen LoreReviser.
+
+   ![Folded approved card](docs/screenshots/collapsed-approved.png)
 4. Yellow warnings appear when a proposal drops a `@@decorator` line, a `/regex/` key or a `{{macro}}` the original had.
 5. Entries the model leaves out of a complete reply show "No changes". "Not returned" appears only with real evidence: the reply ended inside the JSON (the warning shows the finish reason and tokens received / allowed), or that entry's part was unreadable. **Retry missing entries** asks again for just those. The automatic reply budget is generous (at least 4096 tokens, up to 32000) because thinking models spend part of it before answering; common JSON slips (raw line breaks, unescaped quotes) are repaired automatically. If the reply can't be read at all, you see an error plus the raw reply. Every revision also has a "Raw reply" section.
 6. **Clear chat** (under the chat window) removes all messages and review cards but keeps your settings and selection; it asks first if proposals are still undecided. **Cancel** stops a running request. Models that "think" before answering use part of the reply tokens for that; raise Reply tokens if replies get cut off.
+
+## Saving and History
+- **Approve** writes the approved keys, secondary keys and text into the lorebook entry straight away (nothing else about the entry is touched: title, order, position and other settings stay as they are). The World Info editor is refreshed if that book is open in it. The card says "Saved to the lorebook".
+- **Safety check:** before saving, LoreReviser reads the entry again. If it was changed since the revision was made (for example by you in the World Info editor, or by another approval), it does **not** overwrite it: the card goes back to "Proposed" with a red note. Send a new revision for that entry to work from its current text.
+
+  ![Not saved: entry changed meanwhile](docs/screenshots/stale-not-saved.png)
+- **Undo** on an approved card puts the old version back into the lorebook (and notes that in History). If the entry was changed again after you approved it, Undo refuses and tells you to use History instead. **Reject** on a card you edited after approving it also puts the original back.
+- **History:** every saved change is recorded: the entry, its old and new keys and text, the time, your instructions, and the rewrite intensity and change type. Open it with the **clock icon** next to a lorebook in the sidebar (all entries of that book, with a "Show" filter) or the **History** button on a card (just that entry). Changes are listed newest first, with the same Changes / Full Compare / New / Old views as the cards.
+- **Restore old version** (in History) puts the "Old" side of a change back into the lorebook after asking you. The text it replaces is recorded in History first, so a restore can be restored again and nothing is lost. If the entry was changed outside LoreReviser since its last recorded change, the question says so. If the entry changes while the question is open, nothing is written.
+- Entries that were deleted, or lorebooks that no longer exist, can't be written to; you get a plain message instead.
+
+![History](docs/screenshots/history.png)
+
+### Where History is stored
+One file per lorebook in SillyTavern's `data/<user>/user/files/` folder, named `LoreReviser-archive__<name>__<code>.json` (the name is the lorebook name reduced to plain letters, digits and dashes; the code is a short fingerprint of the full name, so different books never share a file). SillyTavern only allows flat file names with plain letters there, which is why there is no folder. The real lorebook name is stored inside the file. They are ordinary JSON files and are included in SillyTavern's backups of your user data. LoreReviser remembers which file belongs to which lorebook in its settings.
+
+### Renamed lorebooks: "Orphaned history files"
+SillyTavern doesn't tell extensions when a lorebook is renamed. If a lorebook with saved History no longer exists under that name, the sidebar shows it under **Orphaned history files**. Pick the lorebook it belongs to now and press **Relink**; its History then shows up under the new name (the file itself keeps its name). **View** lets you look at it first. Nothing is ever deleted automatically: if you deleted the lorebook on purpose, you can simply ignore the entry.
+
+![Orphaned history files](docs/screenshots/orphaned-archive.png)
 
 Things to know: the lore being revised is usually also part of the "active lore" in the prompt (the model is told). Selected entries are read straight from the lorebook files and always sent in full: SillyTavern's World Info budget, recursion and activation limits only affect the "active lore" block (it can be shortened, and a note tells you when SillyTavern's budget really left entries out, with the numbers: tokens used/allowed, the percentage, which context size it came from and the cap if set; SillyTavern's own "budget reached" toast is suppressed for LoreReviser's lookup).
 
@@ -69,7 +92,8 @@ After installing, **hard-refresh the SillyTavern tab (Ctrl+F5)**. Open a chat, c
 If it does not appear, check the Extensions panel for load errors and the browser console (F12) for red errors.
 
 ## Known quirks
-- When the archive arrives (milestone 4), its files are stored in SillyTavern's `user/files` folder as `LoreReviser-archive__<name>__<hash>.json`. SillyTavern's **Data Maid** tool lists any file there that no chat references as a "loose file", so these will show up in it. Don't delete them from there unless you mean to.
+- **Data Maid lists the History files.** SillyTavern's **Data Maid** tool lists every file in `user/files` that no chat refers to as a "loose file", so the `LoreReviser-archive__....json` files show up there. Deleting them there deletes that lorebook's History (your lorebooks themselves are not affected). Leave them unticked unless you really want the History gone.
+- Two browser tabs approving changes to the same lorebook at the same moment could each miss the other's History record. Use one tab at a time.
 - Group chats: the sidebar tries to include each group member's character lorebooks, but this has not been tested yet.
 
 ## Files
@@ -81,13 +105,17 @@ If it does not appear, check the Extensions panel for load errors and the browse
 | `prompt.js` | Builds the revision prompt, token estimate and context limit |
 | `revision.js` | Sends the request on the profile, turns replies into review items, regenerate |
 | `parse.js` | Tolerant reader for the model's JSON reply, integrity warnings |
-| `diff.js` | Word diff and key-list diff for the cards |
-| `review.js` | The review cards (approve / reject / edit / regenerate / paging) |
-| `apply.js` | Stub: writing approved changes to the lorebook (milestone 4) |
+| `diff.js` | Block diff and key-list diff for the cards |
+| `views.js` | Shared display pieces: key chips and the Changes / Full Compare / New / Old views |
+| `review.js` | The review cards (approve / reject / edit / regenerate / paging / fold) |
+| `apply.js` | Writing to lorebooks: Approve, Undo, Restore, with the safety check |
+| `archive.js` | Reading and writing the History files, the index, relinking |
+| `archive-core.js` | File names, records and index logic (no SillyTavern code; unit-tested) |
+| `history.js` | The History window with Restore |
 | `lorebooks.js` | Finds the lorebooks linked to the current chat and lists their entries |
 | `settings.js` | Extension settings and defaults |
 | `style.css` | Styling |
 | `tests/` | Headless-browser test scripts (see `tests/README.md`) |
 
 ## Tests
-`tests/` has unit tests for the parser and diff, and Playwright scripts that start a throwaway SillyTavern, seed test lorebooks, and drive the modal in headless Chrome, including a fake OpenAI-compatible model server with scripted replies (normal, truncated, malformed, error, slow). See `tests/README.md`; `tests/run-all.sh` runs everything.
+`tests/` has unit tests for the parser, diff and History file logic, and Playwright scripts that start a throwaway SillyTavern, seed test lorebooks, and drive the modal in headless Chrome, including a fake OpenAI-compatible model server with scripted replies (normal, truncated, malformed, error, slow). `e2e-archive.mjs` checks saving, History, Restore, the safety checks, folding cards and relinking, verifying every lorebook change through SillyTavern's own API. See `tests/README.md`; `tests/run-all.sh` runs everything.

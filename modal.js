@@ -1,6 +1,7 @@
 // The LoreReviser modal: profile + system prompt settings, linked-lorebook sidebar, chat-style window.
 // Send builds one prompt (prompt.js), sends it on the chosen profile (revision.js) and shows the proposed
-// changes as review cards (review.js). Approving does not write to lorebooks yet (apply.js, milestone 4).
+// changes as review cards (review.js). Approving writes to the lorebook and archives the old version (apply.js,
+// archive.js); History (history.js) shows saved versions with Restore. Orphaned history files can be relinked here.
 
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { getLinkedBooks } from './lorebooks.js';
@@ -12,6 +13,9 @@ import { INTENSITIES, normalizeIntensity } from './intensity.js';
 import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
 import { budgetNote } from './budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
+import { openHistory } from './history.js';
+import { getArchiveIndex, relinkArchive } from './archive.js';
+import { findOrphans } from './archive-core.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -77,6 +81,7 @@ const TEMPLATE = `
         <div class="lorerev_sidebar">
             <div class="lorerev_sidebar_title">Linked lorebooks</div>
             <div id="lorerev_books"></div>
+            <div id="lorerev_orphans"></div>
         </div>
         <div class="lorerev_main">
             <div class="lorerev_prompts">
@@ -290,6 +295,7 @@ export async function openModal() {
                 $('<input type="checkbox" class="lorerev_book_check">'),
                 $('<span class="lorerev_book_name">').text(book.name),
                 $('<span class="lorerev_count lorerev_dim">'),
+                $('<span class="lorerev_hist_btn fa-solid fa-clock-rotate-left" title="History: earlier saved versions of this lorebook\'s entries, with Restore">'),
             );
             $book.append($row, $('<div class="lorerev_book_sources lorerev_dim">').text(book.sources.join(' · ')));
 
@@ -303,6 +309,7 @@ export async function openModal() {
             }
             $book.append($list);
 
+            $row.find('.lorerev_hist_btn').on('click', (e) => { e.stopPropagation(); openHistory({ book: book.name, onRestore: refreshBooks }); });
             // expand / collapse
             $row.find('.lorerev_toggle, .lorerev_book_name').on('click', () => {
                 if (expanded.has(book.name)) expanded.delete(book.name); else expanded.add(book.name);
@@ -326,6 +333,44 @@ export async function openModal() {
             $books.append($book);
         }
         refreshChecks();
+    }
+
+    /** Re-reads the linked books (entry labels can change after a restore) and redraws the sidebar. */
+    async function refreshBooks() {
+        books = await getLinkedBooks();
+        renderBooks();
+    }
+
+    // --- orphaned history files: index entries whose lorebook no longer exists (renamed or deleted) ---
+    const $orphans = $root.find('#lorerev_orphans');
+    function renderOrphans() {
+        $orphans.empty();
+        const index = getArchiveIndex();
+        const names = SillyTavern.getContext().getWorldInfoNames();
+        const orphans = findOrphans(index, names);
+        if (!orphans.length) return;
+        const targets = names.filter(n => !(n in index)).sort((a, b) => a.localeCompare(b));
+        $orphans.append($('<div class="lorerev_sidebar_title lorerev_orphans_title">').text('Orphaned history files'),
+            $('<div class="lorerev_dim">').text('These lorebooks have saved History but no longer exist under that name (renamed or deleted). If one was renamed, pick its new name and press Relink. Nothing is deleted.'));
+        for (const o of orphans) {
+            const $sel = $('<select class="text_pole lorerev_relink_select">').append($('<option value="">Pick the lorebook…</option>'));
+            for (const n of targets) $sel.append($('<option>').val(n).text(n));
+            const $o = $('<div class="lorerev_orphan">').attr('data-book', o.book).append(
+                $('<div class="lorerev_orphan_name">').text(o.book),
+                $('<div class="lorerev_dim lorerev_orphan_file">').text(o.file),
+                $('<div class="lorerev_orphan_row">').append($sel,
+                    $('<div class="menu_button lorerev_btn_relink">').text('Relink').on('click', async () => {
+                        const to = String($sel.val() ?? '');
+                        if (!to) { toastr.info('Pick the lorebook this history belongs to first.', 'LoreReviser'); return; }
+                        const err = await relinkArchive(o.book, to);
+                        if (err) { toastr.warning(err, 'LoreReviser'); return; }
+                        toastr.success(`The history of "${o.book}" now belongs to "${to}".`, 'LoreReviser');
+                        renderOrphans();
+                    }),
+                    $('<div class="menu_button lorerev_btn_orphan_hist">').text('View').attr('title', 'Look at this saved history (Restore needs the lorebook, so relink first)')
+                        .on('click', () => openHistory({ book: o.book }))));
+            $orphans.append($o);
+        }
     }
 
     // --- chat-style window ---
@@ -363,7 +408,7 @@ export async function openModal() {
         const pending = conversation.filter(m => m.role === 'session').flatMap(m => m.session.items).filter(i => i.status === 'proposed').length;
         if (!conversation.length) return;
         if (pending) {
-            // Approve does not write anything yet, so every proposal that is not rejected is still unsaved work.
+            // Proposals that were neither approved nor rejected are unsaved work.
             const popup = new Popup(`<h3>Clear the chat?</h3><p>${pending} proposed change${pending === 1 ? ' has' : 's have'} not been approved or rejected yet and will be lost.</p>`,
                 POPUP_TYPE.CONFIRM, '', { okButton: 'Clear', cancelButton: 'Keep' });
             if ((await popup.show()) !== POPUP_RESULT.AFFIRMATIVE) return;
@@ -486,6 +531,7 @@ export async function openModal() {
                 selection.set(name, new Set([...uids].filter(u => valid.has(u))));
             }
             renderBooks();
+            renderOrphans();
         },
     });
     // ST's 'large' option sets height and max-width but leaves the popup at its default 500px width,

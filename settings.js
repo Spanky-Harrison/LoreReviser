@@ -46,6 +46,7 @@ const DEFAULT_SETTINGS = {
     depth: 0,                         // last X chat messages to send; 0 = whole chat; -1 = no chat at all
     replyTokens: 0,                   // max tokens for the model's reply; 0 = automatic
     contextLimit: 0,                  // context size used for the "too large" warning; 0 = take it from the profile's preset
+    archiveIndex: {},                 // History files: { "<lorebook name>": "<archive file name in user/files>" } (see archive.js)
 };
 
 /** Returns this extension's settings, filling in any missing defaults. */
@@ -53,8 +54,9 @@ export function getSettings() {
     const { extensionSettings, saveSettingsDebounced } = SillyTavern.getContext();
     // Fill in defaults in place so every caller shares the same object that ST saves.
     const settings = (extensionSettings[MODULE_NAME] ??= {});
-    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) settings[key] ??= value;
+    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) settings[key] ??= structuredClone(value);
     if (!settings.intensityTexts || typeof settings.intensityTexts !== 'object' || Array.isArray(settings.intensityTexts)) settings.intensityTexts = {};
+    if (!settings.archiveIndex || typeof settings.archiveIndex !== 'object' || Array.isArray(settings.archiveIndex)) settings.archiveIndex = {};
     if (typeof settings.formatRules !== 'string') settings.formatRules = '';
     if (!settings.changeTypeTexts || typeof settings.changeTypeTexts !== 'object' || Array.isArray(settings.changeTypeTexts)) settings.changeTypeTexts = {};
     settings.changeType = normalizeChangeType(settings.changeType);

@@ -17,7 +17,8 @@ import { buildMessages, countTokens, verifyEntriesSent, gatherContext, loadSelec
  *             so we can't say it is unchanged. A cleanly parsed array that simply omits an entry means "no changes".
  *             item.missingNote says which case it is. "Retry missing entries" re-requests just these.
  *  loading    a regeneration is running
- *  approved / rejected   the user's decision (Approve only marks it for now, see apply.js)
+ *  approved / rejected   the user's decision (Approve writes to the lorebook and archives it, see apply.js;
+ *             item.written = what was saved, so Undo can put the original back)
  */
 
 /** True while a request is running (one at a time). Shared by Send and the per-entry Regenerate buttons. */
