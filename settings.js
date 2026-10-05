@@ -1,5 +1,7 @@
 // Extension settings (saved by ST in settings.json under extension_settings.LoreReviser).
 
+import { normalizeDepth } from './depth.js';
+
 export const MODULE_NAME = 'LoreReviser';
 
 /** The editable part of the system prompt. The fixed reply-format rules are appended separately (see prompt.js). */
@@ -29,7 +31,7 @@ const LEGACY_DEFAULT_PROMPTS = [
 const DEFAULT_SETTINGS = {
     profileId: '',                    // Connection Manager profile id ('' = none chosen)
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
-    depth: 0,                         // last X chat messages to send; 0 = whole chat
+    depth: 0,                         // last X chat messages to send; 0 = whole chat; -1 = no chat at all
     replyTokens: 0,                   // max tokens for the model's reply; 0 = automatic
     contextLimit: 0,                  // context size used for the "too large" warning; 0 = take it from the profile's preset
 };
@@ -40,6 +42,7 @@ export function getSettings() {
     // Fill in defaults in place so every caller shares the same object that ST saves.
     const settings = (extensionSettings[MODULE_NAME] ??= {});
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) settings[key] ??= value;
+    settings.depth = normalizeDepth(settings.depth); // hand-edited / old values: whole number, at least -1
     if (LEGACY_DEFAULT_PROMPTS.includes(settings.systemPrompt)) settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
     return { settings, save: saveSettingsDebounced };
 }

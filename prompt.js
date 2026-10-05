@@ -6,6 +6,7 @@
 // Regeneration adds <previous_attempts> and <regeneration_request> and lists only the entry being redone.
 
 import { loadWorldInfo, getWorldInfoPrompt } from '../../../world-info.js';
+import { normalizeDepth, sliceByDepth } from './depth.js';
 
 /** Fixed reply-format rules, appended after the user's system prompt. */
 export const FORMAT_RULES = `## Reply format (strict)
@@ -53,12 +54,13 @@ export async function loadSelectedEntries(selection) {
 /**
  * Collects the parts of the prompt that do not depend on which entries are revised.
  * Computed once per Send and reused for regenerations.
- * @param {number} depth last X visible chat messages; 0 = all
+ * @param {number} depth last X visible chat messages; 0 = all; -1 = no chat history at all
  */
 export async function gatherContext(depth) {
     const ctx = SillyTavern.getContext();
     const visible = ctx.chat.filter(m => !m.is_system); // hidden messages are not part of a normal prompt either
-    const shown = depth > 0 ? visible.slice(-depth) : visible;
+    const shown = sliceByDepth(visible, depth);
+    const noChat = normalizeDepth(depth) < 0;
     const history = shown.map(m => `${m.name}: ${m.mes}`).join('\n\n');
 
     // Character card fields (not available in some group-chat states)
@@ -108,7 +110,7 @@ export async function gatherContext(depth) {
         ctx.eventSource.removeListener(ctx.eventTypes.WORLDINFO_SCAN_DONE, onScanDone);
     }
 
-    return { card: cardText, lore, loreBudgetHit, history, messagesUsed: shown.length, messagesTotal: visible.length };
+    return { card: cardText, lore, loreBudgetHit, history, messagesUsed: shown.length, messagesTotal: visible.length, noChat };
 }
 
 /** One entry as shown to the model. Keys are JSON arrays so commas inside regex keys stay unambiguous. */
@@ -140,7 +142,9 @@ export function buildMessages({ systemPrompt, context, items, instruction, attem
     const sections = [
         `<character_card>\n${context.card}\n</character_card>`,
         `<active_lore>\n${context.lore || '(none active)'}\n</active_lore>`,
-        `<chat_history messages="${context.messagesUsed} of ${context.messagesTotal}">\n${context.history || '(empty)'}\n</chat_history>`,
+        context.noChat
+            ? `<chat_history messages="0 of ${context.messagesTotal}">\n(No chat history is provided for this request. Work only from the character information, active lore, entries and instructions.)\n</chat_history>`
+            : `<chat_history messages="${context.messagesUsed} of ${context.messagesTotal}">\n${context.history || '(empty)'}\n</chat_history>`,
         `<entries_to_revise>\n${items.map(entryBlock).join('\n')}\n</entries_to_revise>`,
         `<instructions>\n${instruction}\n</instructions>`,
     ];

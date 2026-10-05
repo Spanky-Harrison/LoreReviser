@@ -13,7 +13,7 @@ The profile's preset supplies the sampler settings (temperature etc.). For a tex
 2. **user** = these sections, in this order:
    - `<character_card>`: character and user names, description, personality, scenario, user persona.
    - `<active_lore>`: the lore that a normal send would activate right now (`getWorldInfoPrompt` dry run, scanning the whole visible chat, plus depth/AN/outlet entries). It can contain the entries being revised.
-   - `<chat_history messages="X of Y">`: the last X visible messages (the depth setting), `Name: text`. Hidden/system messages are skipped.
+   - `<chat_history messages="X of Y">`: the last X visible messages (the depth setting; 0 = all), `Name: text`. Hidden/system messages are skipped. With depth -1 the block is kept but says `messages="0 of Y"` and "(No chat history is provided for this request. Work only from the character information, active lore, entries and instructions.)", so the model does not think the chat is merely empty. Regenerate requests behave the same.
    - `<entries_to_revise>`: for every selected entry: id (`E1`, `E2`, ... only valid for this request), book, title, keys and secondary keys as JSON arrays, and the full content.
    - `<instructions>`: what you typed.
 
