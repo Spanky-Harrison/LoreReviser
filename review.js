@@ -4,78 +4,14 @@
 
 import { splitKeywordsAndRegexes } from '../../../world-info.js';
 import { integrityWarnings, sameAsOriginal } from './parse.js';
-import { blockDiff, listDiff } from './diff.js';
-import { applyApproval } from './apply.js';
+import { $el, keyChips, contentView } from './views.js';
+import { openHistory } from './history.js';
+import { applyApproval, undoApproval } from './apply.js';
 import { INTENSITIES } from './intensity.js';
 import { CHANGE_TYPES } from './changetype.js';
 import { regenerateItem, retryMissing, describeEnd, describeError, runState } from './revision.js';
 
-const $el = (tag, cls, text) => { const e = $(`<${tag}>`); if (cls) e.addClass(cls); if (text !== undefined) e.text(text); return e; };
 const currentAttempt = (item) => item.attempts[item.index];
-
-/** Chips for a key list change: removed keys struck through, added keys highlighted. */
-function keyChips(label, oldList, newList) {
-    const row = $el('div', 'lorerev_keys').append($el('span', 'lorerev_dim', `${label}: `));
-    const diff = listDiff(oldList, newList);
-    if (!diff.length) row.append($el('span', 'lorerev_dim', '(none)'));
-    for (const d of diff) row.append($el('span', `lorerev_chip lorerev_chip_${d.type}`, d.text));
-    return row;
-}
-
-/**
- * Renders the content in one of four views. All of them show whole blocks, never word-level marks:
- *  compare: old and new as two columns (stacked when narrow), changed paragraphs tinted
- *  changes: unchanged sentences dimmed, each changed run as a removed block followed by an added block
- *  new / old: just that text
- */
-function contentView(item, attempt, view) {
-    const oldText = item.original.content ?? '', newText = attempt.content ?? '';
-    if (view === 'old') return $el('div', 'lorerev_text', oldText || '(empty)');
-    if (view === 'new') return $el('div', 'lorerev_text', newText || '(empty)');
-    if (view === 'compare') {
-        // Aligned rows: unchanged paragraphs span the full width and are dimmed (long runs are collapsed);
-        // each changed region is one row with the removed paragraphs on the left and the added ones on the right.
-        const ops = blockDiff(oldText, newText, 'paragraph');
-        const wrap = $el('div', 'lorerev_cmp lorerev_text');
-        if (!ops.some(o => o.type !== 'same')) return wrap.append($el('div', 'lorerev_dim', 'The text is unchanged (only keys differ).'));
-        wrap.append($el('div', 'lorerev_row lorerev_col_title').append($el('div', '', 'Old'), $el('div', '', 'New')));
-        const para = (text, mark) => $el('div', `lorerev_para${mark ? ` lorerev_para_${mark}` : ''}`, text);
-        for (let k = 0; k < ops.length; k++) {
-            const op = ops[k];
-            if (op.type === 'same') {
-                const run = $el('div', 'lorerev_same');
-                const show = (blocks) => blocks.forEach(p => run.append(para(p)));
-                if (op.blocks.length <= 3) show(op.blocks);
-                else {
-                    const hidden = op.blocks.slice(1, -1);
-                    const mid = $el('div', 'lorerev_collapsed', `… ${hidden.length} unchanged paragraphs (click to show) …`);
-                    mid.on('click', () => { mid.replaceWith(...hidden.map(p => para(p))); });
-                    run.append(para(op.blocks[0]), mid, para(op.blocks.at(-1)));
-                }
-                wrap.append(run);
-                continue;
-            }
-            // pair a removed run with the added run that follows it (blockDiff always emits del before ins)
-            const next = ops[k + 1];
-            const dels = op.type === 'del' ? op.blocks : [];
-            const inss = op.type === 'ins' ? op.blocks : (next?.type === 'ins' ? next.blocks : []);
-            const cell = (blocks, mark, empty) => $el('div', 'lorerev_cell').append(...(blocks.length ? blocks.map(p => para(p, mark)) : [$el('div', 'lorerev_dim', empty)]));
-            wrap.append($el('div', 'lorerev_row').append(cell(dels, 'del', '(nothing removed)'), cell(inss, 'ins', '(nothing added)')));
-            if (op.type === 'del' && next?.type === 'ins') k++; // the added run was shown in this row
-        }
-        return wrap;
-    }
-    // changes
-    const box = $el('div', 'lorerev_text lorerev_changes');
-    const ops = blockDiff(oldText, newText, 'sentence');
-    if (!ops.some(o => o.type !== 'same')) return box.append($el('div', 'lorerev_dim', 'The text is unchanged (only keys differ).'));
-    for (const op of ops) {
-        const text = op.blocks.join(' ');
-        box.append(op.type === 'same' ? $el('div', 'lorerev_blk lorerev_blk_same', text)
-            : $el('div', `lorerev_blk lorerev_blk_${op.type}`, text).attr('data-mark', op.type === 'del' ? 'Removed' : 'Added'));
-    }
-    return box;
-}
 
 /**
  * @param {object} session
@@ -152,16 +88,27 @@ export function renderSession(session, hooks = {}) {
     }
 
     function buildCard(item) {
-        item.ui ??= { view: 'changes', editing: false, regenText: '' };
+        item.ui ??= { view: 'changes', editing: false, regenText: '', collapsed: false };
         const ui = item.ui;
         const $card = $el('div', `lorerev_card lorerev_status_${item.status}`).attr('data-id', item.id);
-        const title = $el('div', 'lorerev_card_title').append(
+        // Collapsible: the header line (chevron, title, book, status) toggles. ui.collapsed lives on the item, so it survives redraws and reopening.
+        const canCollapse = item.status !== 'loading';
+        const collapsed = canCollapse && !!ui.collapsed;
+        const title = $el('div', `lorerev_card_title${canCollapse ? ' lorerev_card_toggle' : ''}`).append(
+            canCollapse ? $el('span', `lorerev_collapse fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'}`).attr('title', collapsed ? 'Show this card' : 'Hide the details of this card') : '',
             $el('b', '', item.title), $el('span', 'lorerev_dim', ` ${item.book} · ${item.id}`),
             $el('span', `lorerev_pill lorerev_pill_${item.status}`, ({
                 proposed: 'Proposed', unchanged: 'No changes', missing: 'Not returned', loading: 'Regenerating…', approved: 'Approved', rejected: 'Rejected',
             })[item.status]));
         $card.append(title);
+        if (canCollapse) title.on('click', () => { ui.collapsed = !ui.collapsed; rerender(item); });
+        if (collapsed) {
+            $card.addClass('lorerev_card_folded');
+            if (item.attempts[item.index]?.edited) title.find('.lorerev_pill').last().after($el('span', 'lorerev_pill lorerev_pill_edited', 'Edited by you'));
+            return $card;
+        }
         if (item.error) $card.append($el('div', 'lorerev_error_line', item.error));
+        if (item.notice) $card.append($el('div', 'lorerev_ok_line', item.notice));
 
         // --- states without a proposal to show ---
         if (item.status === 'loading') {
@@ -173,7 +120,7 @@ export function renderSession(session, hooks = {}) {
             $card.append($el('div', 'lorerev_dim', item.status === 'missing'
                 ? (item.missingNote ?? 'The model did not return this entry and the reply was damaged, so it is unknown whether it needs changes.')
                 : 'The model left this entry as it is.'));
-            $card.append(ui.editing ? editForm(item, null) : $('<div>').append(buttonsRow(item, ['edit']), regenBox(item)));
+            $card.append(ui.editing ? editForm(item, null) : $('<div>').append(buttonsRow(item, ['edit', 'history']), regenBox(item)));
             return $card;
         }
 
@@ -192,7 +139,11 @@ export function renderSession(session, hooks = {}) {
             $card.append(pager);
         }
         if (item.status === 'approved') $card.append($el('div', 'lorerev_ok_line', item.applyMessage ?? 'Approved.'));
-        if (item.reapprove) $card.append($el('div', 'lorerev_warn', 'You edited this after approving it. Approve it again to confirm your edited version.'));
+        if (item.reapprove) {
+            $card.append($el('div', 'lorerev_warn', item.written
+                ? 'You edited this after approving it. Approve it again to save your edited version. Until then the lorebook keeps the version you approved before (Reject puts the original back).'
+                : 'You edited this after approving it. Approve it again to confirm your edited version.'));
+        }
         if (attempt.note) $card.append($el('div', 'lorerev_note', attempt.note));
         if (attempt.request || attempt.intensity || attempt.changeType) {
             $card.append($el('div', 'lorerev_dim lorerev_attempt_info').append(
@@ -207,8 +158,9 @@ export function renderSession(session, hooks = {}) {
         $card.append(keyChips('Keys', item.original.keys, attempt.keys));
         if (item.original.secondary.length || attempt.secondary.length) $card.append(keyChips('Secondary keys', item.original.secondary, attempt.secondary));
         $card.append(viewToggle(item), contentView(item, attempt, ui.view));
+        if (item.saving) { $card.append($el('div', 'lorerev_dim lorerev_saving', 'Saving…')); return $card; }
         $card.append(buttonsRow(item, ({
-            proposed: ['approve', 'reject', 'edit'], approved: ['undo', 'edit'], rejected: ['undo', 'edit'],
+            proposed: ['approve', 'reject', 'edit', 'history'], approved: ['undo', 'edit', 'history'], rejected: ['undo', 'edit', 'history'],
         })[item.status]));
         if (item.status !== 'approved') $card.append(regenBox(item)); // approved cards: Undo first, then regenerate
         return $card;
@@ -239,7 +191,7 @@ export function renderSession(session, hooks = {}) {
         const read = () => ({ keys: splitKeywordsAndRegexes(String(keys.val())), secondary: splitKeywordsAndRegexes(String(sec.val())), content: String(content.val()) });
         const afterEdit = () => {
             if (item.status === 'approved') item.reapprove = true;
-            item.status = 'proposed'; item.applyMessage = null; item.ui.editing = false; rerender(item);
+            item.status = 'proposed'; item.applyMessage = null; item.notice = null; item.ui.editing = false; rerender(item);
         };
         const buttons = $el('div', 'lorerev_buttons');
         buttons.append($el('div', 'menu_button lorerev_btn_save', 'Save edit').on('click', () => {
@@ -268,15 +220,54 @@ export function renderSession(session, hooks = {}) {
         const row = $el('div', 'lorerev_buttons');
         const btn = (label, cls, fn) => row.append($el('div', `menu_button ${cls ?? ''}`, label).on('click', fn));
         if (which.includes('approve')) btn('Approve', 'lorerev_btn_ok', async () => {
+            // Writes to the lorebook (apply.js). If it can't (entry changed meanwhile, book gone...), the card stays Proposed with the reason.
             const attempt = currentAttempt(item);
-            item.status = 'approved'; item.approvedAttempt = item.index; item.reapprove = false;
-            item.applyMessage = (await applyApproval(item, attempt)).message; // stub until milestone 4
+            const wasReapprove = item.reapprove;
+            Object.assign(item, { status: 'approved', approvedAttempt: item.index, reapprove: false, error: null, notice: null, saving: true, applyMessage: null });
             rerender(item);
+            const res = await applyApproval(item, attempt, { instructions: session.instruction });
+            item.saving = false;
+            if (res.written) { item.applyMessage = res.message; ui.collapsed = true; } // approved cards fold away; click the header to look again
+            else {
+                Object.assign(item, { status: 'proposed', reapprove: wasReapprove, error: res.message });
+                ui.collapsed = false;
+                toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
+            }
+            afterAsync(item);
         });
-        if (which.includes('reject')) btn('Reject', 'lorerev_btn_no', () => { item.status = 'rejected'; rerender(item); });
+        if (which.includes('reject')) btn('Reject', 'lorerev_btn_no', async () => {
+            // A card edited after a saved approval: rejecting means "not this change", so the original goes back too.
+            if (item.written && !(await revert(item))) return;
+            item.status = 'rejected'; item.reapprove = false; item.error = null; rerender(item);
+        });
         if (which.includes('edit')) btn('Edit', '', () => { ui.editing = true; rerender(item); });
-        if (which.includes('undo')) btn('Undo', '', () => { item.status = 'proposed'; item.reapprove = false; item.applyMessage = null; rerender(item); });
+        if (which.includes('undo')) btn('Undo', '', async () => {
+            if (item.status === 'approved' && item.written && !(await revert(item))) return;
+            if (item.status !== 'approved') item.notice = null;
+            item.status = 'proposed'; item.reapprove = false; item.applyMessage = null; item.error = null; ui.collapsed = false; afterAsync(item);
+        });
+        if (which.includes('history')) btn('History', 'lorerev_btn_hist', () => openHistory({ book: item.book, uid: item.uid })).find('.lorerev_btn_hist').attr('title', 'Earlier saved versions of this entry');
         return row;
+    }
+
+    /** Puts the version from before the approval back into the lorebook. Returns false (and shows why) if that wasn't possible. */
+    async function revert(item) {
+        item.saving = true; item.error = null; rerender(item);
+        const res = await undoApproval(item);
+        item.saving = false;
+        if (!res.reverted) {
+            item.error = res.message; item.ui.collapsed = false; // show why
+            toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
+            afterAsync(item);
+            return false;
+        }
+        item.notice = res.message || null;
+        return true;
+    }
+    /** Redraws a card after awaited work; if the modal was closed/reopened meanwhile, redraws the new modal instead. */
+    function afterAsync(item) {
+        rerender(item);
+        if (!$root[0].isConnected) hooks.refresh?.();
     }
 
     /**

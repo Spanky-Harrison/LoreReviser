@@ -8,4 +8,5 @@ node unit.mjs | tail -1 || status=1
 (pgrep -f "fake-openai.mjs" > /dev/null) || (nohup node fake-openai.mjs 9099 > /tmp/fake.log 2>&1 &)
 fresh; node e2e.mjs | tail -1; node e2e-extra.mjs | tail -1
 fresh; node e2e-revision.mjs | tail -1
+fresh; node e2e-archive.mjs | tail -1
 stop

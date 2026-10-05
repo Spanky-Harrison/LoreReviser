@@ -41,7 +41,7 @@ try {
     for (let i = 0; i < 50 && !(ctx.chat.length >= 9); i++) await new Promise(r => setTimeout(r, 200));
   });
 
-  // snapshot of all lorebooks, to prove nothing is written in this milestone
+  // snapshot of all lorebooks: approvals write since milestone 4, so every approval below is undone and this must match at the end
   const snapshot = () => page.evaluate(async () => {
     const out = {};
     for (const n of SillyTavern.getContext().getWorldInfoNames()) {
@@ -69,6 +69,14 @@ try {
   const card = (title) => session().locator('.lorerev_card').filter({ has: page.locator('.lorerev_card_title > b', { hasText: new RegExp(`^${title}$`) }) });
   const pill = (title) => card(title).locator('.lorerev_pill:not(.lorerev_pill_edited)');
   const lastReq = async () => (await fake.requests()).at(-1);
+  // Approve / Undo / Reject write to the lorebook since milestone 4: wait until the card has finished saving
+  const settle = (c) => c.locator('.lorerev_saving').waitFor({ state: 'detached' });
+  const approve = async (c) => { await c.locator('.lorerev_btn_ok').click(); await settle(c); };
+  // approved cards collapse to their header line; clicking the header expands them again
+  const isCollapsed = (c) => c.evaluate(el => el.classList.contains('lorerev_card_folded'));
+  const expand = async (c) => { if (await isCollapsed(c)) await c.locator('.lorerev_card_title').click(); };
+  const undo = async (c) => { await expand(c); await c.locator('.menu_button', { hasText: 'Undo' }).click(); await settle(c); };
+  const entryOnServer = (bookName, uid) => page.evaluate(async ([n, u]) => (await (await fetch('/api/worldinfo/get', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(), body: JSON.stringify({ name: n }) })).json()).entries[u], [bookName, uid]);
   const userMsg = (req) => req.messages.find(m => m.role === 'user').content;
 
   // ================= A. normal reply (code fence + chatter), depth 3 =================
@@ -107,14 +115,16 @@ try {
   const reqIds = (u) => [...u.matchAll(/<entry id="(E\d+)"/g)].map(m => m[1]);
   check('A: every requested entry id is in <entries_to_revise>, in full (console log + request)', reqIds(u1).length === 3 && /requested: E1,E2,E3; entries in prompt: E1,E2,E3/.test(sentLogs.at(-1) ?? ''), `${reqIds(u1)} | ${sentLogs.at(-1)}`);
 
-  // ================= B. approve = mark only, nothing written =================
-  await card('Queen Maren').locator('.lorerev_btn_ok').click();
+  // ================= B. approve writes to the lorebook; Undo puts the old version back =================
+  await approve(card('Queen Maren'));
   check('B: approved pill', (await pill('Queen Maren').textContent()) === 'Approved');
-  check('B: note says nothing saved yet', /nothing was saved yet/.test(await card('Queen Maren').textContent()));
-  check('B: lorebooks untouched after approve', (await snapshot()) === before);
+  await expand(card('Queen Maren'));
+  check('B: note says it was saved', /Saved to the lorebook "Eldoria"/.test(await card('Queen Maren').textContent()), await card('Queen Maren').textContent());
+  check('B: the lorebook has the approved text', (await entryOnServer('Eldoria', 1)).content !== 'Stern but fair monarch, 54 years old.');
   await page.screenshot({ path: `${SHOTS}/15-approved.png` });
-  await card('Queen Maren').locator('.menu_button', { hasText: 'Undo' }).click();
+  await undo(card('Queen Maren'));
   check('B: undo -> proposed', (await pill('Queen Maren').textContent()) === 'Proposed');
+  check('B: undo put the old version back (lorebooks as before)', (await snapshot()) === before);
 
   // ================= C. inline edit =================
   await card('Queen Maren').locator('.menu_button', { hasText: /^Edit$/ }).click();
@@ -355,13 +365,15 @@ try {
     await card(t).locator('.lorerev_ed_content').fill(text);
     await card(t).locator('.lorerev_btn_save').click();
   };
-  await tcard.locator('.lorerev_btn_ok').click();
+  await approve(tcard); await expand(tcard);
   check('P: approved card still has Edit', (await editBtn('Traveler Backstory').count()) === 1);
   await edit('Traveler Backstory', EDIT);
   check('P: editing an approved card puts it back to Proposed with re-approve notice + "Edited by you"', (await pill('Traveler Backstory').textContent()) === 'Proposed' && /Approve it again/.test(await tcard.textContent()) && /Edited by you/.test(await tcard.locator('.lorerev_card_title').textContent()));
   await shot('28-edited-reapprove.png');
-  await tcard.locator('.lorerev_btn_ok').click();
+  await approve(tcard);
+  check('P: re-approval saves the edited text', (await entryOnServer('Persona Lore', 0)).content === EDIT);
   check('P: re-approval works', (await pill('Traveler Backstory').textContent()) === 'Approved' && !/Approve it again/.test(await tcard.textContent()));
+  await expand(tcard);
   await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
   check('P: approved text is exactly the edit box content (whitespace included)', (await tcard.locator('.lorerev_text').textContent()) === EDIT);
   // reopen the editor: the box holds exactly what was approved
@@ -369,7 +381,7 @@ try {
   check('P: editor reloads the exact text', (await tcard.locator('.lorerev_ed_content').inputValue()) === EDIT);
   await tcard.locator('.menu_button', { hasText: 'Cancel' }).click();
   // regenerate -> page between attempts -> edit attempt 1 only
-  await tcard.locator('.menu_button', { hasText: 'Undo' }).click();
+  await undo(tcard);
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Traveler Backstory}}","content":"Second attempt text."}]' }]);
   await tcard.locator('.lorerev_regen .menu_button').click();
@@ -387,7 +399,7 @@ try {
   await tcard.locator('.lorerev_btn_reset').click();
   check("P: reset restores the model's text and clears the edited badge", (await tcard.locator('.lorerev_text').textContent()) === 'Second attempt text.' && !/Edited by you/.test(await tcard.locator('.lorerev_card_title').textContent()));
   // edit after reject
-  await tcard.locator('.lorerev_btn_no').click();
+  await tcard.locator('.lorerev_btn_no').click(); await settle(tcard);
   check('P: rejected card has Edit', (await editBtn('Traveler Backstory').count()) === 1);
   await edit('Traveler Backstory', 'Edited after reject.', 'traveler, Saltmere');
   check('P: edit after reject -> Proposed again, keys saved', (await pill('Traveler Backstory').textContent()) === 'Proposed' && (await tcard.locator('.lorerev_chip_ins').allTextContents()).join('|') === 'Saltmere');
@@ -396,8 +408,9 @@ try {
   check('P: an unchanged card has Edit', (await editBtn('The Missing Heir').count()) === 1);
   await edit('The Missing Heir', 'Prince Aldric vanished last winter. He was last seen near the Silverwood.');
   check('P: editing a "No changes" entry creates your own proposal', (await pill('The Missing Heir').textContent()) === 'Proposed' && /Written by you/.test(await other.textContent()) && /Edited by you/.test(await other.locator('.lorerev_card_title').textContent()));
-  await other.locator('.lorerev_btn_ok').click();
+  await approve(other);
   check('P: ...which can be approved', (await pill('The Missing Heir').textContent()) === 'Approved');
+  await undo(other);
   await tcard.scrollIntoViewIfNeeded();
   await shot('29-edit-every-state.png');
 
@@ -551,9 +564,9 @@ try {
   const cur = card('Currency');
   check('V: regenerate box is visible without clicking anything, multi-line', (await cur.locator('.lorerev_regen_text').isVisible()) && Number(await cur.locator('.lorerev_regen_text').getAttribute('rows')) >= 3 && (await cur.locator('.menu_button', { hasText: 'Regenerate…' }).count()) === 0);
   check('V: also on "No changes" cards, not on approved cards', (await card('Moon Calendar').locator('.lorerev_regen_text').isVisible()) === true);
-  await cur.locator('.lorerev_btn_ok').click();
+  await approve(cur); await expand(cur);
   check('V: approved card has no regenerate box (Undo first)', (await cur.locator('.lorerev_regen_text').count()) === 0);
-  await cur.locator('.menu_button', { hasText: 'Undo' }).click();
+  await undo(cur);
   const REQ1 = 'Make it shorter.\nMention the gold marks.';
   await page.selectOption('#lorerev_intensity', 'heavy');
   await cur.locator('.lorerev_regen_text').fill(REQ1);
@@ -691,7 +704,7 @@ try {
   await page.click('#lorerev_ct_box summary');
   await page.selectOption('#lorerev_changetype', 'development');
 
-  check('lorebooks never written during the whole flow', (await snapshot()) === before);
+  check('lorebooks back exactly as they were (every approval in this flow was undone)', (await snapshot()) === before);
   // ================= Z. WI budget: the PROFILE's context (not ST's Text Completion slider), note only on a real cut =================
   // Bug: ctx.maxContext is only the Text Completion context slider. A Chat Completion user with 262144 context and a 50%
   // budget got budget = 50% of the slider value, so a modest lorebook "overflowed" and the note appeared.

@@ -126,3 +126,28 @@
 
 .lorerev_infobar { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .lorerev_infobar .menu_button { margin: 0; padding: 2px 10px; white-space: nowrap; }
+
+/* ---------- History, saving, orphaned history files (milestone 4) ---------- */
+.lorerev_hist_btn { cursor: pointer; opacity: 0.6; padding: 2px 4px; }
+.lorerev_hist_btn:hover { opacity: 1; }
+.lorerev_hist { text-align: left; }
+.lorerev_hist_top { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.lorerev_hist_top h3 { margin: 0; }
+.lorerev_hist_filter_row { display: flex; align-items: center; gap: 6px; }
+.lorerev_hist_filter { width: auto; max-width: 100%; }
+.lorerev_hist_rec { border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 8px; margin: 8px 0; background: rgba(0, 0, 0, 0.12); }
+.lorerev_hist_restore, .lorerev_hist_undo { border-color: rgba(70, 130, 220, 0.6); }
+.lorerev_hist .menu_button { width: auto; min-width: max-content; white-space: nowrap; padding: 3px 12px; display: inline-flex; }
+.lorerev_hist_empty { margin: 12px 0; }
+.lorerev_saving { margin: 6px 0; }
+.lorerev_orphans_title { margin-top: 14px; }
+.lorerev_orphan { margin: 6px 0; padding: 6px; border: 1px dashed var(--SmartThemeBorderColor); border-radius: 6px; }
+.lorerev_orphan_name { font-weight: bold; overflow-wrap: break-word; }
+.lorerev_orphan_file { font-size: 0.8em; word-break: break-all; }
+.lorerev_orphan_row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.lorerev_orphan_row select { flex: 1 1 140px; min-width: 0; }
+/* collapsible review cards */
+.lorerev_card_toggle { cursor: pointer; user-select: none; }
+.lorerev_collapse { width: 14px; opacity: 0.7; }
+.lorerev_card.lorerev_card_folded { padding-top: 4px; padding-bottom: 4px; }
+.lorerev_card.lorerev_card_folded .lorerev_card_title { margin-bottom: 0; }

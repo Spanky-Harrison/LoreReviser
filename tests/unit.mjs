@@ -9,6 +9,7 @@ import { wiBudget, wiScanContext, budgetNote } from '../budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
+import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel } from '../archive-core.js';
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('PASS:', name); };
@@ -237,5 +238,84 @@ t('budget note: only for a real cut, with the numbers and sources', () => {
     assert.doesNotMatch(budgetNote({ ...b, cap: 0 }), /capped/);
     assert.match(budgetNote({ ...b, cutSelected: ['X'] }), /1 more left-out entry is selected for revision and sent in full anyway/);
     assert.match(budgetNote({ ...b, cut: Array.from({ length: 10 }, (_, i) => `E${i}`) }), /and 2 more/);
+});
+// ---------- archive (milestone 4) ----------
+const STRULE = /^[a-zA-Z0-9_\-.]+$/; // ST's validateAssetFileName
+t('archive slug: ASCII only, accents dropped, separators collapsed, capped at 40', () => {
+    assert.equal(slugify('Eldoria'), 'Eldoria');
+    assert.equal(slugify('The Wishing Game - Frankie'), 'The-Wishing-Game-Frankie');
+    assert.equal(slugify('Ça/va  très   bien!'), 'Ca-va-tres-bien');
+    assert.equal(slugify('日本語の本'), 'book'); assert.equal(slugify('   '), 'book'); assert.equal(slugify(''), 'book');
+    const long = slugify('Intimate Encounters - Complete Compendium of Everything Ever Written');
+    assert.ok(long.length <= 40 && !long.endsWith('-'), long);
+});
+t('archive hash: 8 hex digits, stable, differs for different names (incl. same slug)', () => {
+    assert.match(shortHash('Eldoria'), /^[0-9a-f]{8}$/);
+    assert.equal(shortHash('Eldoria'), shortHash('Eldoria'));
+    assert.notEqual(shortHash('A/B'), shortHash('A B')); assert.equal(slugify('A/B'), slugify('A B'));
+    assert.equal(shortHash(''), '811c9dc5'); // FNV-1a offset basis
+});
+t('archive file name: LoreReviser-archive__<slug>__<hash>.json, passes ST\'s filename rule', () => {
+    for (const name of ['Eldoria', 'Chat Lore', 'Ça/va', '日本語', '.hidden', 'a'.repeat(300), '../../etc/passwd']) {
+        const f = archiveFileName(name);
+        assert.ok(f.startsWith(ARCHIVE_PREFIX) && f.endsWith('.json'), f);
+        assert.match(f, STRULE); assert.ok(isValidFileName(f), f); assert.ok(f.length < 100, f);
+        assert.equal(f, `${ARCHIVE_PREFIX}${slugify(name)}__${shortHash(name)}.json`);
+    }
+    assert.ok(!isValidFileName('a b.json') && !isValidFileName('.x.json') && !isValidFileName('a/b.json'));
+});
+t('archive file name: never reuses a name already taken by another book', () => {
+    const f = archiveFileName('Eldoria');
+    const g = archiveFileName('Eldoria', [f]);
+    assert.notEqual(f, g); assert.match(g, /^LoreReviser-archive__Eldoria__[0-9a-f]{8}\.json$/);
+    assert.equal(archiveFileName('Eldoria', ['something-else.json']), f);
+});
+t('archive: new / normalize (rejects foreign files, keeps the book name)', () => {
+    const a = newArchive('Chat Lore', new Date('2026-10-05T00:00:00Z'));
+    assert.deepEqual(a, { format: 'LoreReviser-archive', version: 1, book: 'Chat Lore', created: '2026-10-05T00:00:00.000Z', records: [] });
+    assert.equal(normalizeArchive({ hello: 1 }, 'x'), null); assert.equal(normalizeArchive(null, 'x'), null);
+    assert.equal(normalizeArchive({ format: 'LoreReviser-archive', records: [] }, 'X').book, 'X');
+});
+t('archive record: old/new copies, metadata only when present, uid as number', () => {
+    const before = { keys: ['a'], secondary: [], content: 'old' }, after = { keys: ['a', 'b'], secondary: ['s'], content: 'new' };
+    const r = makeRecord({ action: 'approve', uid: '3', title: 'T', before, after, instructions: 'do it', request: 'shorter', intensity: 'light', changeType: 'retcon', edited: true, now: new Date('2026-10-05T01:02:03Z') });
+    assert.equal(r.uid, 3); assert.equal(r.time, '2026-10-05T01:02:03.000Z'); assert.equal(r.action, 'approve'); assert.equal(r.title, 'T');
+    assert.deepEqual(r.old, before); assert.deepEqual(r.new, after); assert.notEqual(r.old.keys, before.keys); // copied
+    assert.equal(r.instructions, 'do it'); assert.equal(r.request, 'shorter'); assert.equal(r.intensity, 'light'); assert.equal(r.changeType, 'retcon'); assert.equal(r.edited, true);
+    assert.ok(r.id);
+    const bare = makeRecord({ action: 'undo', uid: 1, title: '', before: after, after: before });
+    for (const k of ['instructions', 'request', 'intensity', 'changeType', 'edited', 'restoredFrom']) assert.ok(!(k in bare), k);
+    assert.equal(makeRecord({ action: 'restore', uid: 1, before, after, restoredFrom: 'x1' }).restoredFrom, 'x1');
+});
+t('archive records: per entry, newest first (ties: later appended first); latestRecord', () => {
+    const a = newArchive('B');
+    const mk = (uid, time, c) => ({ ...makeRecord({ action: 'approve', uid, before: { keys: [], secondary: [], content: '' }, after: { keys: [], secondary: [], content: c } }), time });
+    a.records.push(mk(1, '2026-10-05T01:00:00.000Z', 'one'), mk(2, '2026-10-05T02:00:00.000Z', 'two'), mk(1, '2026-10-05T03:00:00.000Z', 'three'), mk(1, '2026-10-05T03:00:00.000Z', 'four'));
+    assert.deepEqual(recordsFor(a, 1).map(r => r.new.content), ['four', 'three', 'one']);
+    assert.deepEqual(recordsFor(a).map(r => r.new.content), ['four', 'three', 'two', 'one']);
+    assert.equal(latestRecord(a, 2).new.content, 'two'); assert.equal(latestRecord(a, 9), null); assert.deepEqual(recordsFor(null, 1), []);
+});
+t('sameVersion: keys, secondary keys and content all compared', () => {
+    const v = { keys: ['a'], secondary: ['b'], content: 'c' };
+    assert.ok(sameVersion(v, structuredClone(v)));
+    assert.ok(!sameVersion(v, { ...v, content: 'd' })); assert.ok(!sameVersion(v, { ...v, keys: ['a', 'x'] })); assert.ok(!sameVersion(v, { ...v, secondary: [] }));
+    assert.ok(!sameVersion(v, null));
+});
+t('orphans: index entries whose lorebook is gone', () => {
+    const index = { Eldoria: 'f1.json', 'Old Name': 'f2.json' };
+    assert.deepEqual(findOrphans(index, ['Eldoria', 'New Name']), [{ book: 'Old Name', file: 'f2.json' }]);
+    assert.deepEqual(findOrphans({}, ['x']), []);
+});
+t('relink: renames the index key, keeps the file, refuses to clobber another archive', () => {
+    const index = { Eldoria: 'f1.json', 'Old Name': 'f2.json' };
+    assert.equal(relinkIndex(index, 'Old Name', 'New Name'), null);
+    assert.deepEqual(index, { Eldoria: 'f1.json', 'New Name': 'f2.json' });
+    assert.match(relinkIndex(index, 'New Name', 'Eldoria'), /already has its own history/);
+    assert.match(relinkIndex(index, 'Nope', 'X'), /no archive/i);
+    assert.match(relinkIndex(index, 'New Name', ''), /Pick/);
+    assert.deepEqual(index, { Eldoria: 'f1.json', 'New Name': 'f2.json' });
+});
+t('record action labels are plain words', () => {
+    assert.equal(actionLabel('approve'), 'Approved change'); assert.match(actionLabel('restore'), /Restored/); assert.match(actionLabel('undo'), /Undone/);
 });
 console.log(`${n} unit tests passed`);
