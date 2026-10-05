@@ -9,4 +9,5 @@ node unit.mjs | tail -1 || status=1
 fresh; node e2e.mjs | tail -1; node e2e-extra.mjs | tail -1
 fresh; node e2e-revision.mjs | tail -1
 fresh; node e2e-archive.mjs | tail -1
+fresh; node e2e-create.mjs | tail -1
 stop

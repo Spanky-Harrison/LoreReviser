@@ -6,7 +6,7 @@
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { $el, keyChips, contentView } from './views.js';
 import { readArchive, getArchiveIndex } from './archive.js';
-import { recordsFor, actionLabel } from './archive-core.js';
+import { recordsFor, actionLabel, createdByRecord, removedByRecord } from './archive-core.js';
 import { checkRestore, restoreRecord } from './apply.js';
 import { INTENSITIES } from './intensity.js';
 import { CHANGE_TYPES } from './changetype.js';
@@ -50,7 +50,7 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
         for (const [u, t] of entries) $sel.append($('<option>').val(String(u)).text(t));
         $sel.val(filter === null ? '' : String(filter)).on('change', () => { filter = $sel.val() === '' ? null : Number($sel.val()); draw(); });
         $top.append($el('label', 'lorerev_hist_filter_row', 'Show: ').append($sel),
-            $el('div', 'lorerev_dim', 'Every saved change is listed here, newest first. Click a row\'s header to fold or unfold it (newest starts open). "Restore old version" puts the Old side back into the lorebook; the text it replaces is saved here too, so nothing is lost.'));
+            $el('div', 'lorerev_dim', 'Every saved change is listed here, newest first. Click a row\'s header to fold or unfold it (newest starts open). "Restore old version" puts the Old side back into the lorebook; the text it replaces is saved here too, so nothing is lost. For a new entry, "Remove this entry" takes it out again (only while it is still exactly as created), and "Create it again" brings back a removed entry with all its settings.'));
 
         const records = recordsFor(archive, filter);
         $list.empty();
@@ -62,7 +62,7 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
     }
 
     function recordView(r, isNewest) {
-        const view = views.get(r.id) ?? 'changes';
+        const view = views.get(r.id) ?? (createdByRecord(r) ? 'new' : removedByRecord(r) ? 'old' : 'changes');
         // Default: newest expanded, older collapsed. User toggles persist in `folded` for this window.
         const collapsed = folded.has(r.id) ? !!folded.get(r.id) : !isNewest;
         const $r = $el('div', `lorerev_hist_rec lorerev_hist_${r.action}${collapsed ? ' lorerev_hist_folded' : ''}`).attr('data-rec', r.id);
@@ -84,8 +84,14 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
         if (r.changeType) info.push(`Change type: ${CHANGE_TYPES[r.changeType]?.label ?? r.changeType}`);
         if (r.restoredFrom) {
             const src = archive.records.find(x => x.id === r.restoredFrom);
-            info.push(src ? `Put back the old version from the change of ${when(src.time)}` : 'Put back an older version');
+            if (r.action === 'remove') info.push(src ? `Removed from History (undoing the creation of ${when(src.time)})` : 'Removed from History');
+            else if (r.action === 'recreate') info.push(src ? `Created again from the removal of ${when(src.time)}` : 'Created again from History');
+            else info.push(src ? `Put back the old version from the change of ${when(src.time)}` : 'Put back an older version');
         }
+        if (r.action === 'create') info.push(r.settingsFrom && typeof r.settingsFrom === 'object' ? `Settings copied from “${r.settingsFrom.title}” (#${r.settingsFrom.uid})` : 'SillyTavern\'s default settings');
+        if (r.action === 'remove' && r.via === 'undo') info.push('Removed with Undo on its review card');
+        if (r.originalUid !== undefined) info.push(`Was #${r.originalUid} before it was removed`);
+        if (r.oldTitle !== undefined) info.push(`Title changed from “${r.oldTitle}”`);
         if (info.length) $r.append($el('div', 'lorerev_dim lorerev_attempt_info', info.join(' · ')));
         $r.append(keyChips('Keys', r.old.keys, r.new.keys));
         if (r.old.secondary.length || r.new.secondary.length) $r.append(keyChips('Secondary keys', r.old.secondary, r.new.secondary));
@@ -94,15 +100,43 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
             $views.append($el('span', `lorerev_view${view === v ? ' lorerev_view_on' : ''}`, label).on('click', () => { views.set(r.id, v); $r.replaceWith(recordView(r, isNewest)); }));
         }
         $r.append($views, contentView({ original: r.old }, r.new, view));
+        const [label, tip] = createdByRecord(r) ? ['Remove this entry', 'Undo the creation: take this entry out of the lorebook again (only while it is still exactly as created)']
+            : removedByRecord(r) ? ['Create it again', 'Put this removed entry back into the lorebook, with all its settings']
+                : ['Restore old version', 'Put the Old side of this change back into the lorebook'];
         $r.append($el('div', 'lorerev_buttons').append(
-            $el('div', 'menu_button lorerev_btn_restore', 'Restore old version').attr('title', 'Put the Old side of this change back into the lorebook').on('click', () => restore(r))));
+            $el('div', 'menu_button lorerev_btn_restore', label).attr('title', tip).on('click', () => restore(r))));
         return $r;
     }
 
     async function restore(r) {
-        const check = await checkRestore(book, r.uid);
-        if (check.error) { toastr.warning(`Can't restore: ${check.error}.`, 'LoreReviser'); return; }
-        const body = $el('div').append(
+        const check = await checkRestore(book, r);
+        if (check.error) { toastr.warning(`Can't ${createdByRecord(r) ? 'remove' : removedByRecord(r) ? 'create it again' : 'restore'}: ${check.error}.`, 'LoreReviser'); return; }
+        const name = `“${r.title || `Entry #${r.uid}`}”`;
+        let body, okLabel = 'Restore';
+        if (check.kind === 'remove') {
+            if (!check.matches) {
+                toastr.warning('Not removed: this entry was changed after it was created (by a later change or outside LoreReviser), so removing it would lose that change. Delete it in the World Info editor if you no longer want it.', 'LoreReviser', { timeOut: 10000 });
+                return;
+            }
+            okLabel = 'Remove';
+            body = $el('div').append($el('h3', '', 'Remove this entry?'),
+                $el('p', '', `${name} (#${r.uid}) was created by LoreReviser on ${when(r.time)} and is still unchanged. It is taken out of “${book}”. Its full data (with all settings) is kept in History, so “Create it again” can bring it back.`));
+        } else if (check.kind === 'recreate') {
+            if (check.duplicate !== null) { toastr.info(`Nothing to do: “${book}” already has this entry (#${check.duplicate}).`, 'LoreReviser'); return; }
+            okLabel = 'Create';
+            body = $el('div').append($el('h3', '', 'Create the entry again?'),
+                $el('p', '', `${name} is added to “${book}” again, with the keys, text and all settings it had when it was removed on ${when(r.time)}.`));
+            if (check.uidTaken) body.append($el('p', 'lorerev_dim', `Its old number #${r.uid} is used by another entry now, so it gets a new number.`));
+        }
+        if (body) {
+            const ok = await new Popup(body, POPUP_TYPE.CONFIRM, '', { okButton: okLabel, cancelButton: 'Cancel' }).show();
+            if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
+            const res = await restoreRecord(book, r, check.current);
+            if (res.written) { toastr.success(res.message, 'LoreReviser'); onRestore?.(); } else toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
+            await load();
+            return;
+        }
+        body = $el('div').append(
             $el('h3', '', 'Restore the old version?'),
             $el('p', '', `“${r.title || `Entry #${r.uid}`}” in “${book}” gets the keys and text it had before the change of ${when(r.time)}. The current text is saved in History first, so you can go back.`));
         if (check.changedOutside) body.append($el('p', 'lorerev_warn', 'Note: this entry was changed outside LoreReviser since its last saved change (for example in the World Info editor). That change will be replaced too, but it is also kept in History.'));

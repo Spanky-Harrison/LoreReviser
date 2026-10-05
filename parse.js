@@ -62,12 +62,15 @@ function tryParse(text) {
     try { return JSON.parse(text.replace(/,\s*([\]}])/g, '$1')); } catch { return undefined; }
 }
 
+/** Object keys a model may wrap the entry array in. */
+const WRAPPERS = ['entries', 'revisions', 'results', 'new_entries', 'proposals'];
+
 /** Picks the entry array out of a parsed value (array, {entries:[...]}, or a single entry object). */
 function toArray(value) {
     if (Array.isArray(value)) return value;
     if (value && typeof value === 'object') {
-        for (const k of ['entries', 'revisions', 'results']) if (Array.isArray(value[k])) return value[k];
-        if ('id' in value) return [value];
+        for (const k of WRAPPERS) if (Array.isArray(value[k])) return value[k];
+        if ('id' in value || 'content' in value) return [value]; // a single entry (new-entry replies have no id)
     }
     return null;
 }
@@ -79,7 +82,7 @@ function toArray(value) {
 function salvage(text) {
     const result = { entries: [], truncated: false, skipped: 0, skippedIds: [] };
     // Start inside the entries array if there is one ("[{...}" or {"entries":[{...}).
-    let i = text.startsWith('[') ? 1 : (text.startsWith('{') && /^\{\s*"(entries|revisions|results)"\s*:\s*\[/.test(text) ? text.indexOf('[') + 1 : 0);
+    let i = text.startsWith('[') ? 1 : (text.startsWith('{') && /^\{\s*"(entries|revisions|results|new_entries|proposals)"\s*:\s*\[/.test(text) ? text.indexOf('[') + 1 : 0);
     let depth = 0, objStart = -1, inString = false, escaped = false, closedArray = false;
     for (; i < text.length; i++) {
         const ch = text[i];

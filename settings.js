@@ -3,6 +3,7 @@
 import { normalizeDepth } from './depth.js';
 import { DEFAULT_INTENSITY, normalizeIntensity } from './intensity.js';
 import { DEFAULT_CHANGE_TYPE, normalizeChangeType } from './changetype.js';
+import { DEFAULT_CREATE_SYSTEM_PROMPT } from './create-core.js';
 
 export const MODULE_NAME = 'LoreReviser';
 
@@ -46,6 +47,9 @@ const DEFAULT_SETTINGS = {
     depth: 0,                         // last X chat messages to send; 0 = whole chat; -1 = no chat at all
     replyTokens: 0,                   // max tokens for the model's reply; 0 = automatic
     contextLimit: 0,                  // context size used for the "too large" warning; 0 = take it from the profile's preset
+    createSystemPrompt: DEFAULT_CREATE_SYSTEM_PROMPT, // system prompt for new entries (see create-core.js)
+    createFormatRules: '',            // edited reply-format rules for new entries; '' = the default (see create-core.js)
+    createBook: '',                   // last lorebook chosen for new entries
     archiveIndex: {},                 // History files: { "<lorebook name>": "<archive file name in user/files>" } (see archive.js)
 };
 
@@ -58,6 +62,9 @@ export function getSettings() {
     if (!settings.intensityTexts || typeof settings.intensityTexts !== 'object' || Array.isArray(settings.intensityTexts)) settings.intensityTexts = {};
     if (!settings.archiveIndex || typeof settings.archiveIndex !== 'object' || Array.isArray(settings.archiveIndex)) settings.archiveIndex = {};
     if (typeof settings.formatRules !== 'string') settings.formatRules = '';
+    if (typeof settings.createFormatRules !== 'string') settings.createFormatRules = '';
+    if (typeof settings.createSystemPrompt !== 'string' || !settings.createSystemPrompt.trim()) settings.createSystemPrompt = DEFAULT_CREATE_SYSTEM_PROMPT;
+    if (typeof settings.createBook !== 'string') settings.createBook = '';
     if (!settings.changeTypeTexts || typeof settings.changeTypeTexts !== 'object' || Array.isArray(settings.changeTypeTexts)) settings.changeTypeTexts = {};
     settings.changeType = normalizeChangeType(settings.changeType);
     settings.intensity = normalizeIntensity(settings.intensity);

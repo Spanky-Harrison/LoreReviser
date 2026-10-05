@@ -57,7 +57,7 @@ export function describeError(e) {
     const cause = e?.cause?.message || e?.cause;
     return [e?.message, cause && cause !== e?.message ? cause : null].filter(Boolean).join(': ') || String(e);
 }
-const isAbort = (e, signal) => signal?.aborted || e?.name === 'AbortError' || e?.cause?.name === 'AbortError';
+export const isAbort = (e, signal) => signal?.aborted || e?.name === 'AbortError' || e?.cause?.name === 'AbortError';
 
 const LENGTH_REASONS = /^(length|max_tokens|max_output_tokens)$/i;
 
@@ -67,7 +67,7 @@ const LENGTH_REASONS = /^(length|max_tokens|max_output_tokens)$/i;
  * ST's own extractMessageFromData so every backend keeps working.
  * @returns {Promise<{text: string, finishReason: string|null, lengthHit: boolean, completionTokens: number|null, reasoningTokens: number|null}>}
  */
-async function ask(profile, messages, maxTokens, signal) {
+export async function ask(profile, messages, maxTokens, signal) {
     const c = ctx();
     const svc = c.ConnectionManagerRequestService;
     const prompt = svc.constructPrompt(messages, profile.id); // chat completion: unchanged; text completion: instruct-formatted string
