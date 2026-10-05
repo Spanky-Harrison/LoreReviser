@@ -5,6 +5,7 @@ import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
 import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
 import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection, intensityText } from '../intensity.js';
 import { CHANGE_TYPES, DEFAULT_CHANGE_TYPE, normalizeChangeType, changeTypeText, changeTypeSection } from '../changetype.js';
+import { wiBudget, wiScanContext, budgetNote } from '../budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
@@ -218,5 +219,23 @@ t('change type: edited wording replaces only that type; heading stays fixed; bla
 });
 t('default system prompt refers to the "Change type" section', () => {
     assert.match(DEFAULT_SYSTEM_PROMPT, /"Change type" section/);
+});
+t('WI budget: same arithmetic as ST (percent of context, cap wins when smaller)', () => {
+    assert.equal(wiBudget(50, 262144 - 300), 130922);
+    assert.equal(wiBudget(50, 512), 256);
+    assert.equal(wiBudget(50, 262144, 8000), 8000); assert.equal(wiBudget(10, 1000, 8000), 100); // cap only when smaller
+    assert.equal(wiBudget(0, 1000), 1);
+    assert.equal(wiScanContext(262144, 300), 261844); assert.equal(wiScanContext(1000, 0), 1000); assert.equal(wiScanContext(200, 500), 200); assert.equal(wiScanContext(0, 0), 1);
+});
+t('budget note: only for a real cut, with the numbers and sources', () => {
+    const b = { budget: 12, used: 10, percent: 50, cap: 12, scanContext: 261844, limit: 262144, response: 300, source: 'your current Chat Completion settings', cut: ['Currency', 'Moon Calendar'], cutSelected: [] };
+    assert.equal(budgetNote({ ...b, cut: [] }), ''); assert.equal(budgetNote(null), '');
+    const n = budgetNote(b);
+    assert.match(n, /about 10 of 12 tokens used/); assert.match(n, /capped at 12 tokens by your "Budget Cap" setting/);
+    assert.match(n, /50% of 261844 tokens \(context 262144 from your current Chat Completion settings, minus 300 response tokens/);
+    assert.match(n, /left out 2 entries/); assert.match(n, /Currency, Moon Calendar/); assert.match(n, /not an error/);
+    assert.doesNotMatch(budgetNote({ ...b, cap: 0 }), /capped/);
+    assert.match(budgetNote({ ...b, cutSelected: ['X'] }), /1 more left-out entry is selected for revision and sent in full anyway/);
+    assert.match(budgetNote({ ...b, cut: Array.from({ length: 10 }, (_, i) => `E${i}`) }), /and 2 more/);
 });
 console.log(`${n} unit tests passed`);

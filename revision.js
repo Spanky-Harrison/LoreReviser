@@ -150,7 +150,8 @@ function readReply(session, info) {
 export async function prepareSession({ profile, settings, selection, instruction }) {
     const items = await loadSelectedEntries(selection);
     if (!items.length) throw new Error('None of the selected entries could be loaded (were they deleted?).');
-    const context = await gatherContext(settings.depth, items);
+    const ctxInfo = resolveContextLimit(profile, settings);
+    const context = await gatherContext(settings.depth, items, ctxInfo);
     const maxTokens = await resolveReplyTokens(settings, items);
     const session = {
         id: Date.now(), instruction, profile: { id: profile.id, name: profile.name },
@@ -167,7 +168,7 @@ export async function prepareSession({ profile, settings, selection, instruction
     if (check.missing.length) throw new Error(`Internal error: entries ${check.missing.join(', ')} are not in the prompt. Nothing was sent.`);
     session.entriesSent = check.sent;
     const promptTokens = await countTokens(messages);
-    const { limit, source } = resolveContextLimit(profile, settings);
+    const { limit, source } = ctxInfo;
     session.tokens = { promptTokens, maxTokens, limit, source, tooBig: promptTokens + maxTokens > limit * 0.97 };
     session.messages = messages;
     return session;

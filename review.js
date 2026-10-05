@@ -79,7 +79,7 @@ function contentView(item, attempt, view) {
 
 /**
  * @param {object} session
- * @param {{ onChange?: () => void }} [hooks]
+ * @param {{ onChange?: () => void, refresh?: () => void }} [hooks] refresh: redraw the open modal (used when async work finishes after a close/reopen)
  * @returns {JQuery} the session element
  */
 export function renderSession(session, hooks = {}) {
@@ -135,6 +135,7 @@ export function renderSession(session, hooks = {}) {
         } finally {
             runState.busy = false; for (const it of items) it.abort = null;
             redrawAll();
+            if (!$root[0].isConnected) hooks.refresh?.();
         }
     }
     function redrawAll() {
@@ -151,7 +152,7 @@ export function renderSession(session, hooks = {}) {
     }
 
     function buildCard(item) {
-        item.ui ??= { view: 'compare', editing: false, regenText: '' };
+        item.ui ??= { view: 'changes', editing: false, regenText: '' };
         const ui = item.ui;
         const $card = $el('div', `lorerev_card lorerev_status_${item.status}`).attr('data-id', item.id);
         const title = $el('div', 'lorerev_card_title').append(
@@ -180,12 +181,15 @@ export function renderSession(session, hooks = {}) {
         if (attempt?.edited) title.find('.lorerev_pill').last().after($el('span', 'lorerev_pill lorerev_pill_edited', 'Edited by you'));
 
         // --- proposed / approved / rejected: pager (proposed only), note, warnings, keys, content ---
-        if (item.status === 'proposed' && item.attempts.length > 1) {
-            const pager = $el('div', 'lorerev_pager').append(
-                $el('span', 'menu_button lorerev_pg', '‹').on('click', () => { item.index = (item.index + item.attempts.length - 1) % item.attempts.length; rerender(item); }),
-                $el('span', '', `${item.index + 1}/${item.attempts.length}`),
-                $el('span', 'menu_button lorerev_pg', '›').on('click', () => { item.index = (item.index + 1) % item.attempts.length; rerender(item); }));
-            title.append(pager);
+        if (item.attempts.length > 1) {
+            // Swipe-style pager, like ST's swipe arrows. Locked while approved (Undo first) so the approved text can't shift.
+            const locked = item.status === 'approved';
+            const go = (d) => { if (locked) return; item.index = (item.index + d + item.attempts.length) % item.attempts.length; rerender(item); };
+            const pager = $el('div', `lorerev_pager${locked ? ' lorerev_pager_locked' : ''}`).append(
+                $el('div', 'lorerev_swipe fa-solid fa-chevron-left').attr('title', locked ? 'Undo the approval to switch attempts' : 'Previous attempt').on('click', () => go(-1)),
+                $el('span', 'lorerev_swipe_count', `${item.index + 1}/${item.attempts.length}`),
+                $el('div', 'lorerev_swipe fa-solid fa-chevron-right').attr('title', locked ? 'Undo the approval to switch attempts' : 'Next attempt').on('click', () => go(1)));
+            $card.append(pager);
         }
         if (item.status === 'approved') $card.append($el('div', 'lorerev_ok_line', item.applyMessage ?? 'Approved.'));
         if (item.reapprove) $card.append($el('div', 'lorerev_warn', 'You edited this after approving it. Approve it again to confirm your edited version.'));
@@ -212,7 +216,7 @@ export function renderSession(session, hooks = {}) {
 
     function viewToggle(item) {
         const views = $el('div', 'lorerev_views');
-        for (const [v, label] of [['compare', 'Compare'], ['changes', 'Changes'], ['new', 'New'], ['old', 'Old']]) {
+        for (const [v, label] of [['changes', 'Changes'], ['compare', 'Full Compare'], ['new', 'New'], ['old', 'Old']]) {
             views.append($el('span', `lorerev_view${item.ui.view === v ? ' lorerev_view_on' : ''}`, label).on('click', () => { item.ui.view = v; rerender(item); }));
         }
         return views;
@@ -306,6 +310,7 @@ export function renderSession(session, hooks = {}) {
         } finally {
             runState.busy = false; item.abort = null;
             rerender(item); drawNotes();
+            if (!$root[0].isConnected) hooks.refresh?.(); // modal was closed/reopened meanwhile
         }
     }
 

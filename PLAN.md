@@ -48,6 +48,9 @@ Rewrite-intensity wordings (per level) and the reply-format rules are editable i
 ## Change type (done)
 Development / Retcon toggle (default Development), editable wording per type, persisted, applied on Send and Regenerate and shown on each attempt. Not enforced by code: Retcon is an instruction to the model only.
 
+## WI budget fix (done)
+The active-lore scan was given `ctx.maxContext` (only the Text Completion slider), so with Chat Completion the World Info budget was tiny and the "budget reached" note appeared for modest lorebooks. Now it uses the profile's context (Context box > profile preset > current settings of the profile's API > ST main) minus the response length, like ST's Generate(); the note only appears when entries were really cut and shows the numbers. See docs/prompt-format.md.
+
 ## Open questions
 - None currently.
 

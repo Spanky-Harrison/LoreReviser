@@ -79,8 +79,11 @@
 .lorerev_pill_proposed { background: rgba(70, 130, 220, 0.5); }
 .lorerev_pill_approved { background: rgba(60, 154, 85, 0.6); }
 .lorerev_pill_missing { background: rgba(190, 140, 20, 0.6); }
-.lorerev_pager { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-.lorerev_pg { padding: 0 10px; margin: 0; }
+.lorerev_pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 6px 0; }
+.lorerev_swipe { font-size: 1.6em; padding: 4px 12px; cursor: pointer; opacity: 0.75; transition: opacity 0.15s; }
+.lorerev_swipe:hover { opacity: 1; }
+.lorerev_swipe_count { font-size: 1.05em; min-width: 3em; text-align: center; opacity: 0.85; }
+.lorerev_pager_locked .lorerev_swipe { opacity: 0.25; cursor: not-allowed; }
 .lorerev_note { font-style: italic; margin: 4px 0; }
 .lorerev_keys { margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .lorerev_chip { padding: 0 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.1); font-size: 0.9em; }

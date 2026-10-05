@@ -19,6 +19,8 @@ try {
   const sentLogs = [], removedLogs = [];
   page.on('console', m => { if (/removed from active lore:/.test(m.text()) && !/entries requested/.test(m.text())) removedLogs.push(m.text()); });
   page.on('console', m => { if (/\[LoreReviser\] entries requested/.test(m.text())) sentLogs.push(m.text()); });
+  const wiLogs = [];
+  page.on('console', m => { if (/\[LoreReviser\] WI scan:/.test(m.text())) wiLogs.push(m.text()); });
   page.on('pageerror', e => { console.log('[pageerror]', e.message); failures++; });
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|status of 500/.test(m.text())) console.log('[console error]', m.text().slice(0, 200)); });
   await page.goto('http://localhost:8766/');
@@ -81,6 +83,7 @@ try {
   check('A: Queen Maren proposed', (await pill('Queen Maren').textContent()) === 'Proposed');
   check('A: Kingdom (returned identical) = no changes', (await pill('Kingdom of Eldoria').textContent()) === 'No changes');
   check('A: omitted entry = no changes', (await pill('The Missing Heir').textContent()) === 'No changes');
+  await card('Queen Maren').locator('.lorerev_view', { hasText: 'Full Compare' }).click();
   const cmpOld = await card('Queen Maren').locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').nth(0).locator('.lorerev_para_del').allTextContents();
   const cmpNew = await card('Queen Maren').locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').nth(1).locator('.lorerev_para_ins').allTextContents();
   check('A: compare view = whole old block | whole new block (no word-level marks)', cmpOld.join('').includes('54 years') && cmpNew.join('').includes('55 years') && (await card('Queen Maren').locator('.lorerev_ins, .lorerev_del, del, ins').count()) === 0);
@@ -138,10 +141,10 @@ try {
   check('D: request reuses the same context', u2.includes('<character_card>') && u2.includes('messages="3 of 8"'));
   await card('Queen Maren').locator('.lorerev_view', { hasText: 'New' }).click();
   check('D: shows new attempt', (await card('Queen Maren').locator('.lorerev_text').textContent()).startsWith('Regenerated'));
-  await card('Queen Maren').locator('.lorerev_pg', { hasText: '‹' }).click();
+  await card('Queen Maren').locator('.lorerev_swipe.fa-chevron-left').click();
   check('D: page back -> attempt 1 (the edited one)', (await card('Queen Maren').locator('.lorerev_pager').textContent()).includes('1/2') && (await card('Queen Maren').locator('.lorerev_text').textContent()).startsWith('Edited by the user'));
   await page.screenshot({ path: `${SHOTS}/17-regenerate-pager.png` });
-  await card('Queen Maren').locator('.lorerev_pg', { hasText: '›' }).click();
+  await card('Queen Maren').locator('.lorerev_swipe.fa-chevron-right').click();
   check('D: page forward -> 2/2', (await card('Queen Maren').locator('.lorerev_pager').textContent()).includes('2/2'));
 
   // regenerate an entry that had "no changes"
@@ -249,7 +252,8 @@ try {
   await send('Check the size warning.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 5);
   const warnText = await page.locator('.lorerev_msg.lorerev_warn').last().textContent();
-  check('L: size warning shown but request still sent', /may not fit/.test(warnText) && (await fake.requests()).length === 1, warnText);
+  const sizeWarn = (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'may not fit' }).allTextContents()).at(-1) ?? '';
+  check('L: size warning shown but request still sent', /may not fit/.test(sizeWarn) && (await fake.requests()).length === 1, warnText);
   check('L: reply tokens setting used', (await lastReq()).max_tokens === 777);
   await page.screenshot({ path: `${SHOTS}/23-token-warning.png` });
   await page.fill('#lorerev_context', '0'); await page.fill('#lorerev_reply', '0');
@@ -260,6 +264,12 @@ try {
   await page.click('#extensionsMenuButton'); await page.click('#lorereviser_open');
   await page.waitForSelector('.lorerev_book');
   check('M: sessions kept after reopen', (await page.locator('.lorerev_session').count()) === 5);
+  const pagers = await page.locator('.lorerev_pager .lorerev_swipe_count').allTextContents();
+  check('M: reopened cards show the attempt you were on (latest), not the first', pagers.length > 0 && pagers.every(t => { const [a, b] = t.split('/'); return a === b && a !== '1'; }), pagers.join(' '));
+  const pg = page.locator('.lorerev_pager:not(.lorerev_pager_locked)').first();
+  await pg.locator('.lorerev_swipe.fa-chevron-left').click();
+  check('M: swipe arrows still work after reopen', /^1\//.test(await page.locator('.lorerev_pager:not(.lorerev_pager_locked)').first().locator('.lorerev_swipe_count').textContent()));
+  await page.locator('.lorerev_pager:not(.lorerev_pager_locked)').first().locator('.lorerev_swipe.fa-chevron-right').click();
   await page.locator('.lorerev_session').first().locator('.lorerev_card').filter({ has: page.locator('.lorerev_card_title > b', { hasText: /^Queen Maren$/ }) }).locator('.lorerev_btn_no').click();
   check('M: cards still interactive after reopen', (await page.locator('.lorerev_session').first().locator('.lorerev_card').filter({ has: page.locator('.lorerev_card_title > b', { hasText: /^Queen Maren$/ }) }).locator('.lorerev_pill').textContent()) === 'Rejected');
 
@@ -305,10 +315,10 @@ try {
   await page.evaluate(() => { $('#world_info_overflow_alert').prop('checked', false).trigger('change'); $('#world_info_budget_cap').val(0).trigger('input'); });
   await fake.reset();
   await fake.queue([{ content: '[]' }]);
-  const warnsBefore = await page.locator('.lorerev_msg.lorerev_warn').count();
+  const budgetNotesBefore = await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count();
   await send('No budget issue now.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 7);
-  check('N: no note when the budget is fine', (await page.locator('.lorerev_msg.lorerev_warn').count()) === warnsBefore);
+  check('N: no note when the budget is fine', (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count()) === budgetNotesBefore);
 
   // ================= O. block-level views with realistic multi-sentence text =================
   await pick('Persona Lore', ['Traveler Backstory']);
@@ -317,7 +327,7 @@ try {
   await send('Add that the traveler is secretly mapping the Silverwood border for the queen.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 8);
   const tcard = card('Traveler Backstory');
-  check('O: compare is the default view, one aligned row old | new', (await tcard.locator('.lorerev_view_on').textContent()) === 'Compare' && (await tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').count()) === 2);
+  check('O: changes is the default view', (await tcard.locator('.lorerev_view_on').textContent()) === 'Changes'); await tcard.locator('.lorerev_view', { hasText: 'Full Compare' }).click(); check('O: full compare shows one aligned row old | new', (await tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').count()) === 2);
   check('O: both paragraphs changed -> 2 removed blocks left, 2 added blocks right', (await tcard.locator('.lorerev_para_del').count()) === 2 && (await tcard.locator('.lorerev_para_ins').count()) === 2);
   const cellText = (i) => tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').nth(i).textContent();
   check('O: old cell has the whole old text, new cell the whole new text', (await cellText(0)).includes('mother sold smoked eel') && (await cellText(0)).includes('rarely show them') && (await cellText(1)).includes('in secret') && (await cellText(1)).includes('ran a stall'));
@@ -329,7 +339,7 @@ try {
   check('O: in Changes every removed block is directly followed by its added block', /del,ins/.test(order) && !/ins,del/.test(order), order);
   await shot('26-block-changes.png');
   await page.setViewportSize({ width: 600, height: 900 });
-  await tcard.locator('.lorerev_view', { hasText: 'Compare' }).click();
+  await tcard.locator('.lorerev_view', { hasText: 'Full Compare' }).click();
   const stacked = await tcard.locator('.lorerev_row:not(.lorerev_col_title) .lorerev_cell').evaluateAll(els => els[1].getBoundingClientRect().top > els[0].getBoundingClientRect().bottom - 2);
   check('O: narrow screen stacks old above new', stacked);
   await tcard.scrollIntoViewIfNeeded();
@@ -367,10 +377,10 @@ try {
   await tcard.locator('.lorerev_view', { hasText: 'New' }).click();
   await edit('Traveler Backstory', 'Edited attempt two.');
   check('P: edit on attempt 2 applies to attempt 2', (await tcard.locator('.lorerev_text').textContent()) === 'Edited attempt two.' && /2\/2/.test(await tcard.locator('.lorerev_pager').textContent()));
-  await tcard.locator('.lorerev_pg', { hasText: '‹' }).click();
+  await tcard.locator('.lorerev_swipe.fa-chevron-left').click();
   check('P: attempt 1 is untouched (still the edited-by-me text, not attempt 2)', (await tcard.locator('.lorerev_text').textContent()) === EDIT);
   await edit('Traveler Backstory', 'Edited attempt one.');
-  await tcard.locator('.lorerev_pg', { hasText: '›' }).click();
+  await tcard.locator('.lorerev_swipe.fa-chevron-right').click();
   check('P: attempt 2 keeps its own edit', (await tcard.locator('.lorerev_text').textContent()) === 'Edited attempt two.');
   // reset to the model's version
   await editBtn('Traveler Backstory').click();
@@ -404,6 +414,7 @@ try {
   await send('Add the bargain with the drowned child to the festival.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_session').length === 9);
   const fc = card('Festival of Lanterns');
+  await fc.locator('.lorerev_view', { hasText: 'Full Compare' }).click();
   const rows = await fc.locator('.lorerev_cmp > *').evaluateAll(els => els.map(e => e.className.includes('lorerev_col_title') ? 'head' : e.className.includes('lorerev_same') ? 'same' : (e.querySelector('.lorerev_para_del') ? 'del' : '') + (e.querySelector('.lorerev_para_ins') ? 'ins' : '')));
   check('Q: compare = same, [added block only], same (nothing marked removed)', rows.join(',') === 'head,same,ins,same', rows.join(','));
   check('Q: the inserted paragraph is exactly one added block; no removed blocks anywhere', (await fc.locator('.lorerev_para_ins').count()) === 1 && (await fc.locator('.lorerev_para_del').count()) === 0 && (await fc.locator('.lorerev_para_ins').textContent()) === FEST_NEW);
@@ -416,7 +427,7 @@ try {
   await fc.locator('.lorerev_view', { hasText: /^Changes$/ }).click();
   const chOrder = await fc.locator('.lorerev_blk').evaluateAll(els => els.map(e => e.className.replace(/.*lorerev_blk_/, '')).join(','));
   check('Q: Changes view = unchanged (dim), added, unchanged (dim)', chOrder === 'same,ins,same', chOrder);
-  await fc.locator('.lorerev_view', { hasText: /^Compare$/ }).click();
+  await fc.locator('.lorerev_view', { hasText: /^Full Compare$/ }).click();
   await fc.scrollIntoViewIfNeeded();
   await shot('31-mid-insertion-compare.png');
   await fc.locator('.lorerev_view', { hasText: /^Old$/ }).click();
@@ -557,9 +568,9 @@ try {
   check('V: request text is sent in <regeneration_request>, both lines', /<regeneration_request>[\s\S]*Make it shorter\.\nMention the gold marks\.[\s\S]*<\/regeneration_request>/.test(vu));
   check('V: regenerate uses the CURRENT intensity (Heavy-handed)', /## Rewrite intensity: Heavy-handed\nHEAVY-HANDED\./.test(v1.messages[0].content) && !/LIGHT TOUCH\./.test(v1.messages[0].content));
   check('V: box is cleared after use; attempt 2 remembers request + intensity', (await cur.locator('.lorerev_regen_text').inputValue()) === '' && (await cur.locator('.lorerev_attempt_info').textContent()).includes('Make it shorter.') && /Heavy-handed/.test(await cur.locator('.lorerev_attempt_info').textContent()));
-  await cur.locator('.lorerev_pg', { hasText: '‹' }).click();
+  await cur.locator('.lorerev_swipe.fa-chevron-left').click();
   check('V: attempt 1 has no request, shows its own intensity', !/Your request/.test(await cur.textContent()) && /Light touch/.test(await cur.locator('.lorerev_attempt_info').textContent()));
-  await cur.locator('.lorerev_pg', { hasText: '›' }).click();
+  await cur.locator('.lorerev_swipe.fa-chevron-right').click();
   await shot('36-regen-request-remembered.png');
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Third."}]' }]);
@@ -659,7 +670,7 @@ try {
   await card('Currency').locator('.lorerev_btn_regen').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.lorerev_session')].at(-1).querySelector('.lorerev_pager')?.textContent.includes('2/2'));
   check('Y: regenerate uses the current change type', /## Change type: Development\nDEVELOPMENT\./.test(await sysOf()) && /Change type: Development/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
-  await card('Currency').locator('.lorerev_pg', { hasText: '‹' }).click();
+  await card('Currency').locator('.lorerev_swipe.fa-chevron-left').click();
   check('Y: attempt 1 keeps the type it was made with', /Change type: Retcon/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
   // editable wording + Restore default
   await page.selectOption('#lorerev_changetype', 'retcon');
@@ -681,6 +692,75 @@ try {
   await page.selectOption('#lorerev_changetype', 'development');
 
   check('lorebooks never written during the whole flow', (await snapshot()) === before);
+  // ================= Z. WI budget: the PROFILE's context (not ST's Text Completion slider), note only on a real cut =================
+  // Bug: ctx.maxContext is only the Text Completion context slider. A Chat Completion user with 262144 context and a 50%
+  // budget got budget = 50% of the slider value, so a modest lorebook "overflowed" and the note appeared.
+  await page.fill('#lorerev_context', '0');
+  // a modest lorebook: one extra constant entry of a few hundred tokens (restored at the end)
+  const LONG = Array.from({ length: 40 }, (_, i) => `In year ${i + 1} of the old calendar the river guilds kept their records in the archive.`).join(' ');
+  await page.evaluate(async (long) => {
+    const c = SillyTavern.getContext();
+    const data = await c.loadWorldInfo('Global Lore'); window.__zBook = structuredClone(data);
+    data.entries[9] = { ...structuredClone(data.entries[1]), uid: 9, comment: 'Archive History', key: ['archive'], content: long, constant: true, displayIndex: 9 };
+    await c.saveWorldInfo('Global Lore', data, true);
+  }, LONG);
+  const setCC = () => page.evaluate(() => { const c = SillyTavern.getContext(); c.chatCompletionSettings.openai_max_context = 262144; c.chatCompletionSettings.openai_max_tokens = 300; });
+  await page.evaluate(() => {
+    const c = SillyTavern.getContext();
+    window.__z = { tc: $('#max_context').val(), pct: $('#world_info_budget').val(), cap: $('#world_info_budget_cap').val(), cc: c.chatCompletionSettings.openai_max_context, mt: c.chatCompletionSettings.openai_max_tokens };
+    $('#max_context').val(512).trigger('input');
+    $('#world_info_budget').val(50).trigger('input');
+    $('#world_info_budget_cap').val(0).trigger('input');
+    c.chatCompletionSettings.openai_max_context = 262144;
+    c.chatCompletionSettings.openai_max_tokens = 300;
+  });
+  const control = await page.evaluate(async () => {
+    const wi = await import('/scripts/world-info.js'); const c = SillyTavern.getContext();
+    let over = false; const on = (a) => { if (a?.budget?.overflowed) over = true; };
+    c.eventSource.on(c.eventTypes.WORLDINFO_SCAN_DONE, on);
+    const realW = toastr.warning; toastr.warning = () => {};
+    try { await wi.checkWorldInfo(c.chat.filter(m => !m.is_system).map(m => `${m.name}: ${m.mes}`).reverse(), c.maxContext, true, {}); } finally { toastr.warning = realW; c.eventSource.removeListener(c.eventTypes.WORLDINFO_SCAN_DONE, on); }
+    return { maxContext: c.maxContext, over, pct: wi.world_info_budget };
+  });
+  check('Z: repro - the old call (ctx.maxContext = Text Completion slider) overflows a modest lorebook at 50%', control.maxContext === 512 && control.pct === 50 && control.over, JSON.stringify(control));
+  const zSess = await page.locator('.lorerev_session').count();
+  const zWarns = await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count();
+  wiLogs.length = 0;
+  await fake.reset(); await fake.queue([{ content: '[]' }]);
+  await setCC();
+  await send('Z: budget with a big Chat Completion context.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 1, zSess);
+  check('Z: scan uses the profile\'s Chat Completion context minus response length', /context 262144 \(your current Chat Completion settings\) - response 300 = 261844; budget 50% = 130922 tokens/.test(wiLogs.at(-1) ?? '') && /overflowed: false/.test(wiLogs.at(-1) ?? ''), wiLogs.at(-1));
+  check('Z: no budget note with 262144 context and 50% budget', (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).count()) === zWarns);
+  check('Z: active lore is complete (the long constant entry is in it)', userMsg(await lastReq()).includes(LONG));
+  // a real cut: cap the budget; the note gives the numbers, the cap and where the context came from, and names what was cut
+  await page.evaluate(() => $('#world_info_budget_cap').val(12).trigger('input'));
+  wiLogs.length = 0;
+  await fake.reset(); await fake.queue([{ content: '[]' }]);
+  await setCC();
+  await send('Z: with a budget cap.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 2, zSess);
+  const zNote = (await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).allTextContents()).at(-1) ?? '';
+  check('Z: real cut -> note with used/allowed tokens, the cap and the context source', /World Info budget was reached/.test(zNote) && /about \d+ of 12 tokens used/.test(zNote) && /capped at 12 tokens by your "Budget Cap" setting/.test(zNote) && /context 262144 from your current Chat Completion settings, minus 300 response tokens/.test(zNote) && /It left out \d+ (entry|entries)/.test(zNote), zNote);
+  console.log('Z note:', zNote);
+  await page.locator('.lorerev_msg.lorerev_warn', { hasText: 'World Info budget' }).last().scrollIntoViewIfNeeded();
+  await page.evaluate(() => { const ch = document.querySelector('#lorerev_chat'); const n = [...ch.querySelectorAll('.lorerev_msg.lorerev_warn')].filter(m => /World Info budget/.test(m.textContent)).at(-1); ch.scrollTop = n.offsetTop - ch.offsetTop - 40; });
+  await shot('43-budget-note-numbers.png');
+  // the user's Context box wins
+  await page.evaluate(() => $('#world_info_budget_cap').val(0).trigger('input'));
+  await page.fill('#lorerev_context', '1000');
+  wiLogs.length = 0;
+  await fake.reset(); await fake.queue([{ content: '[]' }]);
+  await setCC();
+  await send('Z: with the Context box.');
+  await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 3, zSess);
+  check('Z: the "Context" box overrides the context used for the budget', /context 1000 \(your "Context" box in LoreReviser\) - response 300 = 700; budget 50% = 350 tokens/.test(wiLogs.at(-1) ?? ''), wiLogs.at(-1));
+  await page.fill('#lorerev_context', '0');
+  await page.evaluate(() => { const z = window.__z, c = SillyTavern.getContext();
+    $('#max_context').val(z.tc).trigger('input'); $('#world_info_budget').val(z.pct).trigger('input'); $('#world_info_budget_cap').val(z.cap).trigger('input');
+    c.chatCompletionSettings.openai_max_context = z.cc; c.chatCompletionSettings.openai_max_tokens = z.mt; });
+  await page.evaluate(async () => SillyTavern.getContext().saveWorldInfo('Global Lore', window.__zBook, true));
+
 } catch (e) {
   console.log('TEST ERROR', e); failures++;
   try { const pg = browser.contexts()[0].pages()[0]; console.log('TOASTS:', await pg.locator('.toast-message').allTextContents()); console.log('LAST SESSION:', (await pg.locator('.lorerev_session').last().textContent()).slice(0, 1500)); await pg.screenshot({ path: `${SHOTS}/zz-failure.png` }); } catch {}

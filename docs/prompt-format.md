@@ -87,8 +87,16 @@ LoreReviser does not check the model's output for forbidden words in Retcon mode
 ## Token pre-flight
 
 Before sending, the prompt is counted with `getTokenCountAsync`. If prompt tokens + reply tokens are above 97% of the context limit, a warning is shown (toast and in the chat) but the request is still sent.
-The limit comes from, in order: the "Context" box in the modal (if not 0), the Chat Completion preset of the profile (`openai_max_context`), your main connection's context size.
+The limit comes from, in order: the "Context" box in the modal (if not 0); the Chat Completion preset of the profile (`openai_max_context`); for a Chat Completion profile without a preset, the current Chat Completion settings (`openai_max_context`); for a Text Completion profile, the Text Completion context slider; with no profile, ST's own `getMaxContextTokens()` for the main API.
 Note that a preset can hold a smaller value than the model really supports; use the "Context" box then.
+`SillyTavern.getContext().maxContext` is **not** used: it is only the Text Completion context slider, even when you use Chat Completion.
+
+## World Info budget for `<active_lore>`
+
+The active-lore scan uses the same context as above, minus the response length (the preset's or the current `openai_max_tokens`; for Text Completion the response length slider), because that is what ST's `Generate()` passes to `checkWorldInfo` (`getMaxPromptTokens()`). ST then computes `budget = round(world_info_budget% × that / 100)`, replaced by "Budget Cap" when the cap is set and smaller.
+The note "SillyTavern's World Info budget was reached" is shown only when ST really left entries out (from the `WORLDINFO_SCAN_DONE` event of our own scan: entries that passed the checks but are not in the activated set), and only if at least one of them is not being revised anyway. It says the tokens used and allowed, the percentage and the context it was taken from (and the cap, if set), and lists the left-out entries. Each scan is also logged to the console (`[LoreReviser] WI scan: ...`).
+
+Root cause of an earlier bug: the scan was passed `ctx.maxContext` (the Text Completion slider, e.g. 512 to 8192), so a Chat Completion user with a 262144-token context and a 50% budget got a budget of a few thousand tokens or less, and a modest lorebook "overflowed".
 
 ## Example request (captured)
 

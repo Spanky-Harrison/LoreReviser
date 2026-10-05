@@ -10,6 +10,7 @@ import { renderSession } from './review.js';
 import { normalizeDepth, depthLabel } from './depth.js';
 import { INTENSITIES, normalizeIntensity } from './intensity.js';
 import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
+import { budgetNote } from './budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
@@ -338,8 +339,9 @@ export async function openModal() {
         }
         for (const m of conversation) {
             if (m.role === 'session') {
-                m.session.$el ??= renderSession(m.session, {});
-                $chat.append(m.session.$el);
+                // Re-render from state every time: cached DOM can lose its handlers when the popup closes,
+                // and item.index / item.ui live on the session, so the card reopens on the attempt you were on.
+                $chat.append(renderSession(m.session, { refresh: () => redraw({ keepScroll: true }) }));
                 continue;
             }
             const $m = $('<div class="lorerev_msg">').addClass(`lorerev_${m.role}`).text(m.text);
@@ -435,7 +437,7 @@ export async function openModal() {
             }
             if (session.context.loreBudgetHit) {
                 // Informational: the active-lore part of the prompt is what ST itself would send (cut off by its World Info budget).
-                conversation.splice(-1, 0, { role: 'warn', text: 'Note: SillyTavern\'s World Info budget was reached while working out the currently active lore, so the "active lore" part of the prompt is cut off, exactly as it would be in a normal chat message. The entries you selected are always sent in full. (This is not an error.)' });
+                conversation.splice(-1, 0, { role: 'warn', text: budgetNote(session.context.loreBudget) });
             }
             conversation.at(-1).text = `Waiting for "${profile.name}" (about ${t.promptTokens} prompt tokens, up to ${t.maxTokens} reply tokens)…`;
             redraw({ keepScroll: false });
