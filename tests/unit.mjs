@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { parseRevisionReply as P, integrityWarnings as W, sameAsOriginal } from '../parse.js';
 import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
 import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
+import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection, intensityText } from '../intensity.js';
+import { CHANGE_TYPES, DEFAULT_CHANGE_TYPE, normalizeChangeType, changeTypeText, changeTypeSection } from '../changetype.js';
+import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
+import { DEFAULT_SYSTEM_PROMPT } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff } from '../diff.js';
 
 let n = 0;
@@ -156,5 +160,63 @@ t('dedupe: identical text twice in the lore -> only one occurrence per selected 
     const r = dedupeLore(L('Same\nSame'), [cand('E1', 'Same')]);
     assert.equal(r.src.before, 'Same');
     assert.equal(dedupeLore(L('Same\nSame'), [cand('E1', 'Same'), cand('E2', 'Same')]).src.before, '');
+});
+t('intensity: three levels, default Balanced, junk falls back', () => {
+    assert.deepEqual(Object.keys(INTENSITIES), ['light', 'balanced', 'heavy']); assert.equal(DEFAULT_INTENSITY, 'balanced');
+    assert.equal(normalizeIntensity('heavy'), 'heavy'); assert.equal(normalizeIntensity('nope'), 'balanced'); assert.equal(normalizeIntensity(undefined), 'balanced');
+    assert.equal(normalizeIntensity('toString'), 'balanced'); assert.equal(normalizeIntensity('__proto__'), 'balanced');
+});
+t('intensity wording: each level says what it allows', () => {
+    const l = intensitySection('light'), b = intensitySection('balanced'), h = intensitySection('heavy');
+    assert.match(l, /Light touch/); assert.match(l, /MUST change/); assert.match(l, /pronouns/); assert.match(l, /verbatim/);
+    assert.match(b, /Balanced/); assert.match(b, /essence/); assert.match(h, /Heavy-handed/); assert.match(h, /restructure/);
+    assert.equal(intensitySection('garbage'), b);
+    assert.ok(new Set([l, b, h]).size === 3);
+});
+t('intensity: edited wording replaces only that level; heading stays fixed', () => {
+    const o = { light: 'MY LIGHT' };
+    assert.equal(intensitySection('light', o), '## Rewrite intensity: Light touch\nMY LIGHT');
+    assert.equal(intensityText('balanced', o), INTENSITIES.balanced.text);
+    assert.equal(intensitySection('balanced', o), intensitySection('balanced'));
+    assert.equal(intensityText('light', { light: '   ' }), INTENSITIES.light.text); // blank = default
+    assert.equal(intensityText('light', { light: 5 }), INTENSITIES.light.text);
+    assert.equal(intensityText('light', null), INTENSITIES.light.text);
+});
+t('system prompt refers to the fixed "Rewrite intensity" heading', () => {
+    assert.match(DEFAULT_SYSTEM_PROMPT, /Rewrite intensity/);
+    for (const k of Object.keys(INTENSITIES)) assert.ok(intensitySection(k, { [k]: 'x' }).startsWith('## Rewrite intensity: '));
+});
+t('format rules: default is fine, broken edits are flagged', () => {
+    assert.deepEqual(checkFormatRules(DEFAULT_FORMAT_RULES), []);
+    assert.ok(DEFAULT_FORMAT_RULES.startsWith('## Reply format (strict)'));
+    assert.equal(checkFormatRules('').length, 1); assert.equal(checkFormatRules(undefined).length, 1);
+    assert.ok(checkFormatRules('Answer with a poem.').length >= 3);
+    assert.deepEqual(checkFormatRules('Reply with a JSON array of {id, content}.'), []);
+    assert.match(checkFormatRules('Reply with an array of {id, content}.').join(), /JSON/);
+    assert.match(FORMAT_RULES_NOTE, /JSON array of \{id, keys\?, secondary_keys\?, content\?, note\?\}/);
+});
+t('format rules: blank means the default', () => {
+    assert.equal(effectiveFormatRules(''), DEFAULT_FORMAT_RULES); assert.equal(effectiveFormatRules(undefined), DEFAULT_FORMAT_RULES);
+    assert.equal(effectiveFormatRules('  \n'), DEFAULT_FORMAT_RULES); assert.equal(effectiveFormatRules('mine json array id content'), 'mine json array id content');
+});
+t('change type: Development (default) and Retcon, junk falls back', () => {
+    assert.deepEqual(Object.keys(CHANGE_TYPES), ['development', 'retcon']); assert.equal(DEFAULT_CHANGE_TYPE, 'development');
+    assert.equal(normalizeChangeType('retcon'), 'retcon'); assert.equal(normalizeChangeType('x'), 'development'); assert.equal(normalizeChangeType(undefined), 'development');
+    assert.equal(normalizeChangeType('__proto__'), 'development'); assert.equal(normalizeChangeType('toString'), 'development');
+});
+t('change type wording: development allows before/after, retcon forbids acknowledging the change', () => {
+    const d = changeTypeSection('development'), r = changeTypeSection('retcon');
+    assert.match(d, /^## Change type: Development\nDEVELOPMENT\./); assert.match(d, /before and after/); assert.match(d, /history/);
+    assert.match(r, /^## Change type: Retcon\nRETCON\./); assert.match(r, /always true/); assert.match(r, /do not acknowledge the change/i);
+    for (const w of ['new', 'now', 'recently', 'no longer', 'changed', 'became']) assert.ok(r.includes(`"${w}"`), w);
+    assert.equal(changeTypeSection('junk'), d);
+});
+t('change type: edited wording replaces only that type; heading stays fixed; blank = default', () => {
+    assert.equal(changeTypeSection('retcon', { retcon: 'MINE' }), '## Change type: Retcon\nMINE');
+    assert.equal(changeTypeSection('development', { retcon: 'MINE' }), changeTypeSection('development'));
+    assert.equal(changeTypeText('retcon', { retcon: ' ' }), CHANGE_TYPES.retcon.text); assert.equal(changeTypeText('retcon', null), CHANGE_TYPES.retcon.text);
+});
+t('default system prompt refers to the "Change type" section', () => {
+    assert.match(DEFAULT_SYSTEM_PROMPT, /"Change type" section/);
 });
 console.log(`${n} unit tests passed`);

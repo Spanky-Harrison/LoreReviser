@@ -6,6 +6,8 @@ import { splitKeywordsAndRegexes } from '../../../world-info.js';
 import { integrityWarnings, sameAsOriginal } from './parse.js';
 import { blockDiff, listDiff } from './diff.js';
 import { applyApproval } from './apply.js';
+import { INTENSITIES } from './intensity.js';
+import { CHANGE_TYPES } from './changetype.js';
 import { regenerateItem, retryMissing, describeEnd, describeError, runState } from './revision.js';
 
 const $el = (tag, cls, text) => { const e = $(`<${tag}>`); if (cls) e.addClass(cls); if (text !== undefined) e.text(text); return e; };
@@ -149,7 +151,7 @@ export function renderSession(session, hooks = {}) {
     }
 
     function buildCard(item) {
-        item.ui ??= { view: 'compare', editing: false, regenOpen: false, regenText: '' };
+        item.ui ??= { view: 'compare', editing: false, regenText: '' };
         const ui = item.ui;
         const $card = $el('div', `lorerev_card lorerev_status_${item.status}`).attr('data-id', item.id);
         const title = $el('div', 'lorerev_card_title').append(
@@ -170,7 +172,7 @@ export function renderSession(session, hooks = {}) {
             $card.append($el('div', 'lorerev_dim', item.status === 'missing'
                 ? (item.missingNote ?? 'The model did not return this entry and the reply was damaged, so it is unknown whether it needs changes.')
                 : 'The model left this entry as it is.'));
-            $card.append(ui.editing ? editForm(item, null) : buttonsRow(item, ['edit', 'regen']));
+            $card.append(ui.editing ? editForm(item, null) : $('<div>').append(buttonsRow(item, ['edit']), regenBox(item)));
             return $card;
         }
 
@@ -188,6 +190,12 @@ export function renderSession(session, hooks = {}) {
         if (item.status === 'approved') $card.append($el('div', 'lorerev_ok_line', item.applyMessage ?? 'Approved.'));
         if (item.reapprove) $card.append($el('div', 'lorerev_warn', 'You edited this after approving it. Approve it again to confirm your edited version.'));
         if (attempt.note) $card.append($el('div', 'lorerev_note', attempt.note));
+        if (attempt.request || attempt.intensity || attempt.changeType) {
+            $card.append($el('div', 'lorerev_dim lorerev_attempt_info').append(
+                attempt.intensity ? $el('span', '', `Rewrite intensity: ${INTENSITIES[attempt.intensity]?.label ?? attempt.intensity}. `) : '',
+                attempt.changeType ? $el('span', '', `Change type: ${CHANGE_TYPES[attempt.changeType]?.label ?? attempt.changeType}. `) : '',
+                attempt.request ? $el('span', 'lorerev_request', `Your request for this attempt: “${attempt.request}”`) : ''));
+        }
         for (const w of integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));
 
         if (ui.editing) { $card.append(editForm(item, attempt)); return $card; }
@@ -196,8 +204,9 @@ export function renderSession(session, hooks = {}) {
         if (item.original.secondary.length || attempt.secondary.length) $card.append(keyChips('Secondary keys', item.original.secondary, attempt.secondary));
         $card.append(viewToggle(item), contentView(item, attempt, ui.view));
         $card.append(buttonsRow(item, ({
-            proposed: ['approve', 'reject', 'edit', 'regen'], approved: ['undo', 'edit'], rejected: ['undo', 'edit', 'regen'],
+            proposed: ['approve', 'reject', 'edit'], approved: ['undo', 'edit'], rejected: ['undo', 'edit'],
         })[item.status]));
+        if (item.status !== 'approved') $card.append(regenBox(item)); // approved cards: Undo first, then regenerate
         return $card;
     }
 
@@ -263,14 +272,21 @@ export function renderSession(session, hooks = {}) {
         if (which.includes('reject')) btn('Reject', 'lorerev_btn_no', () => { item.status = 'rejected'; rerender(item); });
         if (which.includes('edit')) btn('Edit', '', () => { ui.editing = true; rerender(item); });
         if (which.includes('undo')) btn('Undo', '', () => { item.status = 'proposed'; item.reapprove = false; item.applyMessage = null; rerender(item); });
-        if (which.includes('regen')) btn('Regenerate…', '', () => { ui.regenOpen = !ui.regenOpen; rerender(item); });
-        if (!(which.includes('regen') && ui.regenOpen)) return row;
+        return row;
+    }
 
-        // Regenerate panel: optional guidance for this entry
-        const note = $('<textarea class="text_pole" rows="2" placeholder="Optional: what should be different this time?">').val(ui.regenText);
+    /**
+     * Always-visible box for an extra request ("secondary prompt") for the next regeneration of this entry.
+     * It is sent as <regeneration_request> and remembered on the new attempt (shown when you page to it).
+     */
+    function regenBox(item) {
+        const ui = item.ui;
+        const note = $('<textarea class="text_pole lorerev_regen_text" rows="3">')
+            .attr('placeholder', 'Extra request for the next regeneration (optional), e.g. "keep it shorter" or "leave the second paragraph alone"')
+            .val(ui.regenText);
         note.on('input', () => { ui.regenText = String(note.val()); });
-        const go = $el('div', 'menu_button', 'Regenerate').on('click', () => regen(item));
-        return $('<div>').append(row, $el('div', 'lorerev_regen').append(note, go));
+        const go = $el('div', 'menu_button lorerev_btn_regen', 'Regenerate').on('click', () => regen(item));
+        return $el('div', 'lorerev_regen').append(note, go);
     }
 
     /** Runs a regeneration for one entry (one request at a time). */
@@ -282,7 +298,7 @@ export function renderSession(session, hooks = {}) {
         item.status = 'loading'; item.error = null; rerender(item);
         try {
             await regenerateItem(session, item, note, item.abort.signal);
-            item.ui.regenOpen = false; item.ui.regenText = '';
+            item.ui.regenText = ''; // consumed: it now lives on the new attempt
         } catch (e) {
             item.status = before;
             item.error = item.abort.signal.aborted ? 'Regeneration cancelled.' : `Regeneration failed: ${describeError(e)}`;

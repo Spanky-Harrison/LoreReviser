@@ -42,12 +42,18 @@ A SillyTavern extension that reads and updates lorebooks to reflect story and ch
 - **New entries.** The user picks the target lorebook. Proposed entries use the same review format as revisions (approve / edit / regenerate). The user can optionally pick an existing entry to copy its detailed settings from (everything except content, title, and keys); otherwise the defaults are used.
 - **ST version.** Latest release only.
 
+## Editable system-message parts (done)
+Rewrite-intensity wordings (per level) and the reply-format rules are editable in the modal, stored only when edited (`settings.intensityTexts`, `settings.formatRules`), with Restore default buttons and a parse-safety warning. Modal buttons no longer wrap (`.lorerev_root .menu_button { white-space: nowrap; width: auto }`).
+
+## Change type (done)
+Development / Retcon toggle (default Development), editable wording per type, persisted, applied on Send and Regenerate and shown on each attempt. Not enforced by code: Retcon is an instruction to the model only.
+
 ## Open questions
 - None currently.
 
 ## Milestones
 1. ~~Verify ST APIs~~ Done: see `docs/milestone1-findings.md`.
 2. ~~Modal and sidebar with no model calls~~ Done (wand entry, wide modal, chat window, profile selector, editable system prompt, linked-lorebook sidebar, depth setting, README).
-3. ~~Revision call and review UI~~ Built and tested against a scripted fake model server; **still to do: try it with a real model** and adjust the default prompt/format if needed. Prompt and reply format: `docs/prompt-format.md`. Differences from the plan: when a reply is cut off, the user is told to select fewer entries / raise "Reply tokens" (no automatic "retry with fewer entries" button), and the context limit comes from the profile's preset or a "Context" box in the modal. Added after first real-model tests: block-level diff views, Edit on every card state, "Retry missing entries", repair of common JSON slips, bigger automatic reply budget, WI budget toast suppressed for our dry run.
+3. ~~Revision call and review UI~~ Built and tested against a scripted fake model server; **still to do: try it with a real model** and adjust the default prompt/format if needed. Prompt and reply format: `docs/prompt-format.md`. Differences from the plan: when a reply is cut off, the user is told to select fewer entries / raise "Reply tokens" (no automatic "retry with fewer entries" button), and the context limit comes from the profile's preset or a "Context" box in the modal. Added after first real-model tests: block-level diff views, Edit on every card state, "Retry missing entries", repair of common JSON slips, bigger automatic reply budget, WI budget toast suppressed for our dry run; selected entries sent once (removed from the active lore); depth -1; rewrite intensity (Light touch / Balanced / Heavy-handed); formatting-preservation rules; always-visible regenerate request box; Clear chat.
 4. Approve/write, archive (file naming, index, relink for renames), and history/restore. Hook: `applyApproval()` in `apply.js` is called on Approve and currently only reports that nothing was saved.
 5. New-entry function.

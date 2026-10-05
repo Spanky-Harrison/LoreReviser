@@ -103,9 +103,42 @@ try {
   await page.selectOption('#lorerev_profile', 'prof-b');
 
   // system prompt
-  await page.click('.lorerev_system summary');
+  await page.click('.lorerev_system summary >> nth=0');
   await page.fill('#lorerev_system', 'MY CUSTOM SYSTEM PROMPT');
   await page.screenshot({ path: `${SHOTS}/07-system-prompt.png` });
+
+  // editable appended parts: intensity wordings + reply format rules (persisted; edits survive reopen and reload)
+  check('prompt parts: intensity + rules sections are collapsed by default', (await page.locator('#lorerev_int_box[open], #lorerev_rules_box[open]').count()) === 0);
+  await page.click('#lorerev_int_box summary');
+  await page.fill('.lorerev_int_text[data-level="light"]', 'MY LIGHT WORDING');
+  check('prompt parts: only the edited level is stored', JSON.stringify(await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.intensityTexts)) === '{"light":"MY LIGHT WORDING"}');
+  check('prompt parts: edited marker shown', /edited/.test(await page.textContent('[data-edited="light"]')) && (await page.textContent('[data-edited="heavy"]')) === '');
+  await page.selectOption('#lorerev_changetype', 'retcon');
+  await page.click('#lorerev_ct_box summary');
+  await page.fill('.lorerev_ct_text[data-type="development"]', 'MY DEV WORDING');
+  await page.click('#lorerev_ct_box summary');
+  await page.click('#lorerev_rules_box summary');
+  check('prompt parts: default rules show no warning', !(await page.isVisible('#lorerev_rules_warn')));
+  await page.fill('#lorerev_rules', 'MY RULES: reply with a poem.');
+  check('prompt parts: broken rules warn clearly', (await page.isVisible('#lorerev_rules_warn')) && /JSON array of \{id, keys\?, secondary_keys\?, content\?, note\?\}/.test(await page.textContent('#lorerev_rules_warn')));
+  await page.fill('#lorerev_rules', 'MY RULES: reply with ONE JSON array of objects with an id and content.');
+  check('prompt parts: acceptable edited rules clear the warning', !(await page.isVisible('#lorerev_rules_warn')));
+  await page.fill('#lorerev_rules', 'MY RULES: reply with a poem.');
+  await page.evaluate(() => document.querySelector('#lorerev_int_box').scrollIntoView({ block: 'start' }));
+  await page.screenshot({ path: `${SHOTS}/39-editable-prompt-parts.png` });
+  await page.evaluate(() => document.querySelector('#lorerev_rules_box').scrollIntoView({ block: 'start' }));
+  await page.screenshot({ path: `${SHOTS}/39b-rules-warning.png` });
+  await page.click('#lorerev_rules_reset');
+  check('restore default: rules back to the default, no override stored, no warning', (await page.inputValue('#lorerev_rules')).startsWith('## Reply format (strict)') && (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.formatRules)) === '' && !(await page.isVisible('#lorerev_rules_warn')));
+  await page.fill('#lorerev_rules', 'MY RULES: reply with ONE JSON array of {id, content} objects.');
+  await page.click('[data-restore="balanced"]'); // restoring an unedited level changes nothing
+  check('restore default: other levels untouched', (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'MY LIGHT WORDING');
+  // no button in the modal may wrap its text (ST's .menu_button is width:min-content)
+  const wrapped = await page.$$eval('.lorerev_root .menu_button', els => els.filter(el => el.offsetParent).filter(el => el.scrollWidth > el.clientWidth || el.getBoundingClientRect().height > 2.2 * parseFloat(getComputedStyle(el).lineHeight || 20) + 8).map(el => el.textContent.trim()));
+  check('all modal buttons keep their text on one line', wrapped.length === 0, wrapped.join(' | '));
+  const rb = await page.locator('#lorerev_system_reset').boundingBox();
+  check('"Restore default" is one line and wide enough', rb.height < 40 && rb.width > 90 && (await page.textContent('#lorerev_system_reset')) === 'Restore default', JSON.stringify(rb));
+  await page.click('#lorerev_int_box summary'); await page.click('#lorerev_rules_box summary'); // collapse again
 
   // depth
   const info0 = await page.textContent('#lorerev_depth_info');
@@ -113,6 +146,9 @@ try {
   await page.fill('#lorerev_depth', '3');
   const info1 = await page.textContent('#lorerev_depth_info');
   check('depth 3 -> 3 of 8', info1 === '3 of 8 messages will be sent', info1);
+  // rewrite intensity: default, persisted
+  check('intensity select: three options, default Balanced', (await page.locator('#lorerev_intensity option').allTextContents()).join('|') === 'Light touch|Balanced|Heavy-handed' && (await page.inputValue('#lorerev_intensity')) === 'balanced');
+  await page.selectOption('#lorerev_intensity', 'light');
   // depth -1 = no chat at all
   check('depth input allows -1 (min attribute)', (await page.getAttribute('#lorerev_depth', 'min')) === '-1');
   await page.fill('#lorerev_depth', '-1');
@@ -175,6 +211,9 @@ try {
   check('reopen: selection restored', (await page.textContent('#lorerev_selected_info')) === '5 entries selected in 2 book(s)');
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
+  check('reopen: edited prompt parts restored', (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'MY LIGHT WORDING' && (await page.inputValue('.lorerev_int_text[data-level="heavy"]')).startsWith('HEAVY-HANDED.') && (await page.inputValue('#lorerev_rules')).startsWith('MY RULES'));
+  check('reopen: change type + edited wording restored', (await page.inputValue('#lorerev_changetype')) === 'retcon' && (await page.inputValue('.lorerev_ct_text[data-type="development"]')) === 'MY DEV WORDING' && (await page.inputValue('.lorerev_ct_text[data-type="retcon"]')).startsWith('RETCON.'));
+  check('reopen: intensity restored', (await page.inputValue('#lorerev_intensity')) === 'light');
   check('reopen: depth -1 restored with its label', (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
   await page.click('dialog[open] .popup-button-ok');
   await page.waitForTimeout(800);
@@ -189,7 +228,9 @@ try {
   const persisted = await page.evaluate(() => JSON.stringify(SillyTavern.getContext().extensionSettings.LoreReviser));
   console.log('after reload settings:', persisted);
   const p = JSON.parse(persisted);
-  check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === -1);
+  check('settings persisted across reload', p.profileId === 'prof-b' && p.systemPrompt === 'MY CUSTOM SYSTEM PROMPT' && p.depth === -1 && p.intensity === 'light');
+  check('change type + edited wording persisted across reload', p.changeType === 'retcon' && p.changeTypeTexts?.development === 'MY DEV WORDING' && Object.keys(p.changeTypeTexts).length === 1);
+  check('edited intensity wording + format rules persisted across reload', p.intensityTexts?.light === 'MY LIGHT WORDING' && Object.keys(p.intensityTexts).length === 1 && p.formatRules.startsWith('MY RULES'));
 } catch (e) {
   console.log('TEST ERROR', e);
   failures++;
