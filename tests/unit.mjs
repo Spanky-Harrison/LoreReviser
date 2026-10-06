@@ -9,7 +9,7 @@ import { wiBudget, wiScanContext, budgetNote } from '../budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
 import { DEFAULT_SYSTEM_PROMPT, getSettings, LEGACY_DEFAULT_PROMPTS, LEGACY_CREATE_PROMPTS } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff, sentenceSpans, proposalHunks, applyHunkEdits } from '../diff.js';
-import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive } from '../archive-core.js';
+import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear, removeRecords } from '../archive-core.js';
 import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, effectiveCreateRules, effectiveCreatePrompt, proposalId, NOT_COPIED, settingsFrom, freeUid, nextDisplayIndex, toProposal, proposalLabel, proposalWarnings, entryMatches, buildCreateMessages } from '../create-core.js';
 
 let n = 0;
@@ -319,6 +319,62 @@ t('relink: renames the index key, keeps the file, refuses to clobber another arc
 t('record action labels are plain words', () => {
     assert.equal(actionLabel('approve'), 'Approved change'); assert.match(actionLabel('restore'), /Restored/); assert.match(actionLabel('undo'), /Undone/);
 });
+
+// ---------- clearing old History ----------
+{
+    const NOW = new Date('2026-10-06T12:00:00.000Z');
+    const ago = (days, extraMs = 0) => new Date(NOW.getTime() - days * 86400000 - extraMs).toISOString();
+    const mk = (id, time, extra = {}) => ({ ...makeRecord({ action: 'approve', uid: 1, before: { keys: [], secondary: [], content: 'o' }, after: { keys: [], secondary: [], content: id } }), id, time, ...extra });
+    const sample = () => { const a = newArchive('B'); a.records.push(mk('a', ago(400)), mk('b', ago(100)), mk('c', ago(30, 1)), mk('d', ago(30)), mk('e', ago(8)), mk('f', ago(1)), mk('g', 'not a date'), mk('h', undefined)); return a; };
+    const ids = (list) => list.map(r => r.id).join(',');
+    t('clear choices: 7 / 30 / 90 days, 1 year, all; unknown id -> default', () => {
+        assert.deepEqual(CLEAR_CHOICES.map(c => c.id), ['7d', '30d', '90d', '1y', 'all']);
+        assert.equal(clearChoice('1y').days, 365); assert.equal(clearChoice('all').days, null);
+        assert.equal(clearChoice('nope').id, DEFAULT_CLEAR_CHOICE);
+        for (const c of CLEAR_CHOICES) assert.match(c.label, /older than|all history/);
+    });
+    t('clear older than: strict age cutoff, newer records kept', () => {
+        const a = sample();
+        assert.equal(ids(recordsToClear(a, '7d', NOW)), 'a,b,c,d,e');
+        assert.equal(ids(recordsToClear(a, '30d', NOW)), 'a,b,c'); // exactly 30 days old is not "older than"
+        assert.equal(ids(recordsToClear(a, '90d', NOW)), 'a,b');
+        assert.equal(ids(recordsToClear(a, '1y', NOW)), 'a');
+    });
+    t('clear older than: records without a readable time are kept', () => {
+        const a = sample();
+        for (const c of ['7d', '30d', '90d', '1y']) assert.ok(!recordsToClear(a, c, NOW).some(r => r.id === 'g' || r.id === 'h'));
+    });
+    t('clear all: every record, whatever its time; empty/missing archive -> nothing', () => {
+        assert.equal(ids(recordsToClear(sample(), 'all', NOW)), 'a,b,c,d,e,f,g,h');
+        assert.deepEqual(recordsToClear(newArchive('B'), 'all', NOW), []);
+        assert.deepEqual(recordsToClear(null, '7d', NOW), []);
+    });
+    t('removeRecords: removes exactly the listed ids, keeps order, notes the clean-up', () => {
+        const a = sample();
+        const n = removeRecords(a, recordsToClear(a, '90d', NOW).map(r => r.id), { how: '90d', now: NOW });
+        assert.equal(n, 2); assert.equal(ids(a.records), 'c,d,e,f,g,h');
+        assert.deepEqual(a.cleared, [{ time: NOW.toISOString(), removed: 2, how: '90d' }]);
+        assert.equal(a.book, 'B'); assert.equal(a.format, 'LoreReviser-archive');
+    });
+    t('removeRecords: clear all leaves an empty but valid archive', () => {
+        const a = sample();
+        assert.equal(removeRecords(a, recordsToClear(a, 'all', NOW).map(r => r.id), { how: 'all', now: NOW }), 8);
+        assert.deepEqual(a.records, []); assert.ok(normalizeArchive(a, 'B'));
+        assert.equal(recordsFor(a).length, 0);
+    });
+    t('removeRecords: a record added after confirming is never removed; unknown ids ignored; nothing removed -> no note', () => {
+        const a = sample();
+        const planned = recordsToClear(a, 'all', NOW).map(r => r.id);
+        a.records.push(mk('late', NOW.toISOString()));
+        assert.equal(removeRecords(a, planned, { now: NOW }), 8); assert.equal(ids(a.records), 'late');
+        assert.equal(removeRecords(a, ['zzz'], { now: NOW }), 0); assert.equal(a.cleared.length, 1);
+        assert.equal(removeRecords(null, ['a']), 0);
+    });
+    t('removeRecords: one record (trash icon)', () => {
+        const a = sample();
+        assert.equal(removeRecords(a, ['e']), 1); assert.equal(ids(a.records), 'a,b,c,d,f,g,h');
+    });
+}
 
 // ---------- milestone 5: new entries ----------
 t('new-entry reply: single object without id, wrapper keys', () => {

@@ -1,4 +1,5 @@
 // End-to-end test of milestone 4 (Approve writes, archive, History/Restore, stale checks, orphaned archives / relink)
+// and clearing History (older than / one record / all, deleting an orphaned file; lorebooks never touched)
 // against the fake model server. Needs: a FRESH ST on :8766 (tests/start-test-st.sh), node tests/fixtures.mjs,
 // node tests/fake-openai.mjs 9099. Every lorebook change is verified through ST's own API, not the UI.
 import { chromium } from 'playwright-core';
@@ -299,6 +300,145 @@ try {
   });
   check('8: non-ASCII / slash book name -> valid flat file name, UTF-8 text survives', /^LoreReviser-archive__Chateau-Unicode__[0-9a-f]{8}\.json$/.test(odd.file) && odd.book === 'Château Ünicode / 日本 ' && odd.content === 'neu – ✓', JSON.stringify(odd));
   check('8: a file that is not a LoreReviser history file is not overwritten', /not a LoreReviser history file/.test(odd.err), odd.err);
+
+  // ================= 9. Clear old history (older than / one record / all); the lorebook is never touched =================
+  const allBooks = () => page.evaluate(async () => {
+    const ctx = SillyTavern.getContext(); const h = ctx.getRequestHeaders(); const out = {};
+    for (const n of ctx.getWorldInfoNames().sort()) out[n] = await (await fetch('/api/worldinfo/get', { method: 'POST', headers: h, body: JSON.stringify({ name: n }) })).json();
+    return JSON.stringify(out);
+  });
+  const booksBefore = await allBooks();
+  const eldFile = (await index()).Eldoria;
+  const recent = (await readFile(eldFile)).records.map(r => r.id);
+  // three old records: 400 days (one is a removal with a saved copy of the entry) and 40 days
+  await page.evaluate(async () => {
+    const a = await import('/scripts/extensions/third-party/LoreReviser/archive.js');
+    const c = await import('/scripts/extensions/third-party/LoreReviser/archive-core.js');
+    const ago = (d) => new Date(Date.now() - d * 86400000).toISOString();
+    const v = (content) => ({ keys: ['old'], secondary: [], content });
+    const arc = await a.readArchive('Eldoria');
+    arc.records.unshift(
+      { ...c.makeRecord({ action: 'approve', uid: 1, title: 'Queen Maren', before: v('very old'), after: v('old') }), id: 'old-400', time: ago(400) },
+      { ...c.makeRecord({ action: 'remove', uid: 7, title: 'Gone Entry', before: v('gone'), after: { keys: [], secondary: [], content: '' }, extra: { snapshot: { uid: 7, key: ['old'], content: 'gone', comment: 'Gone Entry' } } }), id: 'old-400-rm', time: ago(400) },
+      { ...c.makeRecord({ action: 'approve', uid: 0, title: 'Kingdom of Eldoria', before: v('a'), after: v('b') }), id: 'old-40', time: ago(40) });
+    await a.writeArchive('Eldoria', arc);
+  });
+  const total9 = recent.length + 3;
+  await book('Eldoria').locator('.lorerev_hist_btn').click();
+  await hist().waitFor(); await recs().first().waitFor();
+  check('9: History shows the old records too', (await recs().count()) === total9);
+  const clearRow = hist().locator('.lorerev_hist_clear');
+  check('9: "Clear old history" control with 7 / 30 / 90 days, 1 year, all', (await clearRow.count()) === 1
+    && (await clearRow.locator('option').allTextContents()).join('|') === 'older than 7 days|older than 30 days|older than 90 days|older than 1 year|all history for this lorebook');
+  const clearDlg9 = () => page.locator('dialog[open]').filter({ has: page.locator('.lorerev_hist_clear_confirm') });
+  // cancel changes nothing
+  await clearRow.locator('select').selectOption('all');
+  await clearRow.locator('.lorerev_btn_hist_clear').click();
+  await clearDlg9().waitFor();
+  await clearDlg9().locator('.popup-button-cancel').click();
+  await clearDlg9().waitFor({ state: 'detached' });
+  check('9: Cancel removes nothing', (await readFile(eldFile)).records.length === total9);
+  // older than 30 days
+  await clearRow.locator('select').selectOption('30d');
+  await clearRow.locator('.lorerev_btn_hist_clear').click();
+  await clearDlg9().waitFor();
+  const t9 = await clearDlg9().textContent();
+  check('9: confirm says how many, that the lorebook is not changed and that it can\'t be undone', t9.includes(`3 of the ${total9} saved changes`) && /older than 30 days/.test(t9) && /lorebook itself is not changed/.test(t9) && /can't be restored/.test(t9), t9);
+  check('9: confirm warns that a removed entry can no longer be created again', /saved copy of a removed entry/.test(t9));
+  check('9: OK button names the count', (await clearDlg9().locator('.popup-button-ok').textContent()).trim() === 'Remove 3');
+  await shot('57-history-clear-confirm.png');
+  await clearDlg9().locator('.popup-button-ok').click();
+  await page.waitForFunction((n) => document.querySelectorAll('dialog.lorerev_hist_popup .lorerev_hist_rec').length === n, recent.length);
+  const arc9 = await readFile(eldFile);
+  check('9: older than 30 days removed only the old records, newer ones kept in order', arc9.records.map(r => r.id).join(',') === recent.join(','), JSON.stringify(arc9.records.map(r => r.id)));
+  check('9: the clean-up is noted in the file', arc9.cleared?.length === 1 && arc9.cleared[0].removed === 3 && arc9.cleared[0].how === '30d');
+  check('9: lorebooks untouched by Clear', (await allBooks()) === booksBefore);
+  // nothing older than a year left -> plain message, no question
+  await page.evaluate(() => toastr.clear());
+  await clearRow.locator('select').selectOption('1y');
+  await clearRow.locator('.lorerev_btn_hist_clear').click();
+  await page.waitForFunction(() => /Nothing to clear/.test([...document.querySelectorAll('.toast-message')].map(t => t.textContent).join(' ')));
+  check('9: nothing that old -> message, no confirm, nothing written', (await clearDlg9().count()) === 0 && (await readFile(eldFile)).records.length === recent.length);
+  await page.evaluate(() => toastr.clear());
+  // trash icon on one record (works on a folded row, without unfolding it)
+  const lastRec = recs().last();
+  const lastId = await lastRec.getAttribute('data-rec');
+  const wasFolded = await isHistFolded(lastRec);
+  await lastRec.locator('.lorerev_hist_del').click();
+  await clearDlg9().waitFor();
+  const tDel = await clearDlg9().textContent();
+  check('9: trash icon asks first, says the lorebook is not changed', /Delete this History record\?/.test(tDel) && /lorebook itself is not changed/.test(tDel) && /can't be restored/.test(tDel), tDel);
+  await clearDlg9().locator('.popup-button-ok').click();
+  await page.waitForFunction((n) => document.querySelectorAll('dialog.lorerev_hist_popup .lorerev_hist_rec').length === n, recent.length - 1);
+  const arcDel = await readFile(eldFile);
+  check('9: trash removed exactly that record', wasFolded && arcDel.records.length === recent.length - 1 && !arcDel.records.some(r => r.id === lastId) && arcDel.records.map(r => r.id).join(',') === recent.filter(id => id !== lastId).join(','));
+  check('9: lorebooks untouched by the trash icon', (await allBooks()) === booksBefore);
+  // clear all
+  await clearRow.locator('select').selectOption('all');
+  await clearRow.locator('.lorerev_btn_hist_clear').click();
+  await clearDlg9().waitFor();
+  check('9: clear all: confirm says all N', (await clearDlg9().textContent()).includes(`All ${recent.length - 1} saved change`));
+  await clearDlg9().locator('.popup-button-ok').click();
+  await hist().locator('.lorerev_hist_empty').waitFor();
+  const arcAll = await readFile(eldFile);
+  check('9: clear all leaves an empty History file, index entry kept', arcAll.format === 'LoreReviser-archive' && arcAll.book === 'Eldoria' && arcAll.records.length === 0 && (await index()).Eldoria === eldFile);
+  check('9: empty History hides the Clear control', (await hist().locator('.lorerev_hist_clear').count()) === 0 && /No saved changes yet for this lorebook/.test(await hist().textContent()));
+  check('9: lorebooks untouched by clear all', (await allBooks()) === booksBefore);
+  await closeHist();
+  // History keeps working after a clear: a restore-free check that new records still append
+  const after9 = await page.evaluate(async () => {
+    const a = await import('/scripts/extensions/third-party/LoreReviser/archive.js');
+    const c = await import('/scripts/extensions/third-party/LoreReviser/archive-core.js');
+    await a.appendRecord('Eldoria', c.makeRecord({ action: 'approve', uid: 1, title: 'x', before: { keys: [], secondary: [], content: '1' }, after: { keys: [], secondary: [], content: '2' } }));
+    return (await a.readArchive('Eldoria')).records.length;
+  });
+  check('9: new records are saved normally after clearing', after9 === 1);
+
+  // ================= 10. Delete an orphaned history file =================
+  await page.evaluate(async () => {
+    const a = await import('/scripts/extensions/third-party/LoreReviser/archive.js');
+    const c = await import('/scripts/extensions/third-party/LoreReviser/archive-core.js');
+    await a.appendRecord('Gone Book', c.makeRecord({ action: 'approve', uid: 0, title: 'y', before: { keys: [], secondary: [], content: '1' }, after: { keys: [], secondary: [], content: '2' } }));
+  });
+  const goneFile = (await index())['Gone Book'];
+  const booksBefore10 = await allBooks();
+  const otherFiles = [(await index()).Eldoria, (await index())['Chat Lore Renamed']];
+  await closeModal(); await openModal();
+  const gone = page.locator('.lorerev_orphan[data-book="Gone Book"]');
+  await gone.waitFor();
+  check('10: orphan has a Delete button next to Relink and View', (await gone.locator('.lorerev_btn_relink, .lorerev_btn_orphan_hist, .lorerev_btn_orphan_delete').count()) === 3);
+  const delDlg = () => page.locator('dialog[open]').filter({ has: page.locator('.lorerev_orphan_delete_confirm') });
+  await gone.locator('.lorerev_btn_orphan_delete').click();
+  await delDlg().waitFor();
+  const t10 = await delDlg().textContent();
+  check('10: Delete asks first: count, no lorebook changed, can\'t be restored', /1 saved change\b/.test(t10) && /No lorebook is changed/.test(t10) && /can't be restored/.test(t10) && t10.includes(goneFile), t10);
+  await gone.scrollIntoViewIfNeeded();
+  await shot('58-orphan-delete-confirm.png');
+  await delDlg().locator('.popup-button-cancel').click();
+  await delDlg().waitFor({ state: 'detached' });
+  check('10: Cancel keeps the file and the index entry', typeof (await readFile(goneFile)) === 'object' && (await index())['Gone Book'] === goneFile);
+  await gone.locator('.lorerev_btn_orphan_delete').click();
+  await delDlg().waitFor();
+  await delDlg().locator('.popup-button-ok').click();
+  await gone.waitFor({ state: 'detached' });
+  check('10: Delete removed the file and its index entry', (await readFile(goneFile)) === 404 && !('Gone Book' in (await index())));
+  check('10: other History files kept', typeof (await readFile(otherFiles[0])) === 'object' && typeof (await readFile(otherFiles[1])) === 'object');
+  check('10: lorebooks untouched by Delete', (await allBooks()) === booksBefore10 && booksBefore10 === booksBefore);
+  // a file that is not a LoreReviser history file is never deleted
+  const foreign = await page.evaluate(async (file) => {
+    const a = await import('/scripts/extensions/third-party/LoreReviser/archive.js');
+    const ap = await import('/scripts/extensions/third-party/LoreReviser/apply.js');
+    a.getArchiveIndex()['Foreign Book'] = file;
+    const res = await ap.deleteOrphanHistory('Foreign Book');
+    const still = (await fetch(`/user/files/${file}`, { cache: 'no-cache' })).ok;
+    const kept = a.getArchiveIndex()['Foreign Book'] === file;
+    delete a.getArchiveIndex()['Foreign Book'];
+    // the lorebook "Eldoria" exists, so its History file is not deleted as an orphan either
+    const res2 = await ap.deleteOrphanHistory('Eldoria');
+    return { res, still, kept, res2 };
+  }, odd.file);
+  check('10: a foreign file under our name is not deleted', !foreign.res.ok && /not a LoreReviser history file/.test(foreign.res.message) && foreign.still && foreign.kept, JSON.stringify(foreign));
+  check('10: an existing lorebook\'s History is never deleted as an orphan', !foreign.res2.ok && /exists again/.test(foreign.res2.message) && typeof (await readFile(otherFiles[0])) === 'object');
   await page.evaluate(() => SillyTavern.getContext().saveSettingsDebounced());
 } catch (e) {
   console.log('TEST ERROR', e); failures++;

@@ -140,3 +140,45 @@ export function uidsInArchive(archive) {
     }
     return out;
 }
+
+// ---------- clearing old History ----------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Choices for "Clear old history". days = null means every record. */
+export const CLEAR_CHOICES = [
+    { id: '7d', days: 7, label: 'older than 7 days' },
+    { id: '30d', days: 30, label: 'older than 30 days' },
+    { id: '90d', days: 90, label: 'older than 90 days' },
+    { id: '1y', days: 365, label: 'older than 1 year' },
+    { id: 'all', days: null, label: 'all history for this lorebook' },
+];
+export const DEFAULT_CLEAR_CHOICE = '90d';
+export const clearChoice = (id) => CLEAR_CHOICES.find(c => c.id === id) ?? CLEAR_CHOICES.find(c => c.id === DEFAULT_CLEAR_CHOICE);
+
+/**
+ * Records a "Clear old history" choice would remove. Age choices remove records whose time is before now - days;
+ * a record without a readable time is kept (we can't tell how old it is). 'all' removes every record.
+ */
+export function recordsToClear(archive, choiceId, now = new Date()) {
+    const records = archive?.records ?? [];
+    const choice = clearChoice(choiceId);
+    if (choice.days === null) return [...records];
+    const cutoff = now.getTime() - choice.days * DAY_MS;
+    return records.filter(r => { const t = Date.parse(r?.time); return !isNaN(t) && t < cutoff; });
+}
+
+/**
+ * Takes the records with these ids out of the archive (in place) and notes the clean-up in archive.cleared.
+ * Only ids still in the file are removed, so a record added after the user confirmed is never lost.
+ * Returns how many were removed.
+ */
+export function removeRecords(archive, ids, { how = '', now = new Date() } = {}) {
+    if (!archive || !Array.isArray(archive.records)) return 0;
+    const drop = new Set(ids ?? []);
+    const before = archive.records.length;
+    archive.records = archive.records.filter(r => !drop.has(r?.id));
+    const removed = before - archive.records.length;
+    if (removed) archive.cleared = [...(archive.cleared ?? []), { time: now.toISOString(), removed, ...(how ? { how } : {}) }];
+    return removed;
+}

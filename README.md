@@ -68,13 +68,23 @@ Change type (Development / Retcon) applies to new entries too (Retcon: written a
 ![History](docs/screenshots/history.png)
 ![History of a new entry](docs/screenshots/history-new-entry.png)
 
+### Clearing old History
+History files grow with every saved change. To trim them, open a lorebook's History and use **Clear old history** at the top: pick **older than 7 days**, **30 days**, **90 days** or **1 year**, or **all history for this lorebook**, then press **Clear…**. It always asks first and says how many saved changes will be removed (it applies to every entry of that lorebook, whatever the "Show" filter is). Newer changes are kept. If nothing is that old, it just tells you so.
+- Each History row also has a **trash icon** (right end of its header) to remove just that one saved change, again after asking.
+- **Only History is removed. The lorebook itself is never changed**: your entries keep their current text, keys and settings. But once removed, those old versions can't be restored, and a removed entry whose saved copy is cleared can no longer be brought back with "Create it again" (the question warns you when that applies).
+- "All history" empties the lorebook's History file rather than deleting it, so the file and its link to the lorebook stay, and new changes are recorded as usual. A note of each clean-up (when, how many) is kept in the file.
+- Entry numbers only stay reserved for entries that still have History, so after clearing, SillyTavern may give a new entry a number that an old, cleared entry used.
+
+![Clear old history](docs/screenshots/history-clear-confirm.png)
+
 ### Where History is stored
 One file per lorebook in SillyTavern's `data/<user>/user/files/` folder, named `LoreReviser-archive__<name>__<code>.json` (the name is the lorebook name reduced to plain letters, digits and dashes; the code is a short fingerprint of the full name, so different books never share a file). SillyTavern only allows flat file names with plain letters there, which is why there is no folder. The real lorebook name is stored inside the file. They are ordinary JSON files and are included in SillyTavern's backups of your user data. LoreReviser remembers which file belongs to which lorebook in its settings.
 
 ### Renamed lorebooks: "Orphaned history files"
-SillyTavern doesn't tell extensions when a lorebook is renamed. If a lorebook with saved History no longer exists under that name, the sidebar shows it under **Orphaned history files**. Pick the lorebook it belongs to now and press **Relink**; its History then shows up under the new name (the file itself keeps its name). **View** lets you look at it first. Nothing is ever deleted automatically: if you deleted the lorebook on purpose, you can simply ignore the entry.
+SillyTavern doesn't tell extensions when a lorebook is renamed. If a lorebook with saved History no longer exists under that name, the sidebar shows it under **Orphaned history files**. Pick the lorebook it belongs to now and press **Relink**; its History then shows up under the new name (the file itself keeps its name). **View** lets you look at it first. Nothing is ever deleted automatically: if you deleted the lorebook on purpose, you can ignore the entry, or press **Delete** to remove that history file for good (it asks first and says how many saved changes it holds; no lorebook is changed). Delete refuses if a lorebook with that name exists again (use Clear old history in its History instead), and never deletes a file that isn't a LoreReviser history file.
 
 ![Orphaned history files](docs/screenshots/orphaned-archive.png)
+![Delete an orphaned history file](docs/screenshots/orphan-delete-confirm.png)
 
 Things to know: the lore being revised is usually also part of the "active lore" in the prompt (the model is told). Selected entries are read straight from the lorebook files and always sent in full: SillyTavern's World Info budget, recursion and activation limits only affect the "active lore" block (it can be shortened, and a note tells you when SillyTavern's budget really left entries out, with the numbers: tokens used/allowed, the percentage, which context size it came from and the cap if set; SillyTavern's own "budget reached" toast is suppressed for LoreReviser's lookup).
 
@@ -131,7 +141,7 @@ If it does not appear, check the Extensions panel for load errors and the browse
 | `views.js` | Shared display pieces: key chips and the Changes / Full Compare / New / Old views |
 | `review.js` | The review cards (approve / reject / edit / regenerate / paging / fold) |
 | `apply.js` | Writing to lorebooks: Approve, Undo, Restore, with the safety check; creating new entries, removing them again, creating them again from History |
-| `archive.js` | Reading and writing the History files, the index, relinking |
+| `archive.js` | Reading and writing the History files, the index, relinking, clearing records, deleting orphaned files |
 | `archive-core.js` | File names, records and index logic (no SillyTavern code; unit-tested) |
 | `history.js` | The History window with Restore |
 | `lorebooks.js` | Finds the lorebooks linked to the current chat and lists their entries |
@@ -140,4 +150,4 @@ If it does not appear, check the Extensions panel for load errors and the browse
 | `tests/` | Headless-browser test scripts (see `tests/README.md`) |
 
 ## Tests
-`tests/` has unit tests for the parser, diff (including the "Edit proposal" hunks), prompt defaults and History file logic, and Playwright scripts that start a throwaway SillyTavern, seed test lorebooks, and drive the modal in headless Chrome, including a fake OpenAI-compatible model server with scripted replies (normal, truncated, malformed, error, slow). `e2e-archive.mjs` checks saving, History, Restore, the safety checks, folding cards and relinking, verifying every lorebook change through SillyTavern's own API. `e2e-create.mjs` checks the new-entry flow: the request, the cards, Approve creating entries with copied or default settings, Edit, Regenerate, Undo/Reject removing them, History remove / create again, and the safety checks. See `tests/README.md`; `tests/run-all.sh` runs everything.
+`tests/` has unit tests for the parser, diff (including the "Edit proposal" hunks), prompt defaults and History file logic, and Playwright scripts that start a throwaway SillyTavern, seed test lorebooks, and drive the modal in headless Chrome, including a fake OpenAI-compatible model server with scripted replies (normal, truncated, malformed, error, slow). `e2e-archive.mjs` checks saving, History, Restore, the safety checks, folding cards, relinking, Clear old history (older than / one record / all) and deleting orphaned files, verifying every lorebook change through SillyTavern's own API. `e2e-create.mjs` checks the new-entry flow: the request, the cards, Approve creating entries with copied or default settings, Edit, Regenerate, Undo/Reject removing them, History remove / create again, and the safety checks. See `tests/README.md`; `tests/run-all.sh` runs everything.

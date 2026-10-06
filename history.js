@@ -2,15 +2,18 @@
 // the same diff views as the review cards and a one-click Restore. Opens as a popup on top of the modal.
 // Each record is collapsible (same pattern as review cards): header click folds/unfolds. Default: newest
 // expanded, older ones collapsed; fold state is kept for this History window session.
+// "Clear old history" (top) and the trash icon on each row remove History records only; the lorebook is never touched.
 
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { $el, keyChips, contentView } from './views.js';
 import { readArchive, getArchiveIndex } from './archive.js';
-import { recordsFor, actionLabel, createdByRecord, removedByRecord } from './archive-core.js';
-import { checkRestore, restoreRecord } from './apply.js';
+import { recordsFor, actionLabel, createdByRecord, removedByRecord, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear } from './archive-core.js';
+import { checkRestore, restoreRecord, clearHistoryRecords } from './apply.js';
 import { INTENSITIES } from './intensity.js';
 import { CHANGE_TYPES } from './changetype.js';
 
+const changes = (n) => `${n} saved change${n === 1 ? '' : 's'}`;
+const KEEP_NOTE = 'The lorebook itself is not changed: its entries keep their current text and settings. Only these saved versions are removed from History, and once removed they can\'t be restored.';
 const when = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? String(iso ?? '') : d.toLocaleString(); };
 
 /**
@@ -29,6 +32,7 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
     const views = new Map(); // record id -> chosen view
     // Fold state for this History window: missing = default (newest expanded, older collapsed).
     const folded = new Map();
+    let clearSel = DEFAULT_CLEAR_CHOICE; // "Clear old history" choice, kept for this window
 
     async function load() {
         $list.empty().append($el('div', 'lorerev_dim', 'Loading…'));
@@ -50,7 +54,18 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
         for (const [u, t] of entries) $sel.append($('<option>').val(String(u)).text(t));
         $sel.val(filter === null ? '' : String(filter)).on('change', () => { filter = $sel.val() === '' ? null : Number($sel.val()); draw(); });
         $top.append($el('label', 'lorerev_hist_filter_row', 'Show: ').append($sel),
-            $el('div', 'lorerev_dim', 'Every saved change is listed here, newest first. Click a row\'s header to fold or unfold it (newest starts open). "Restore old version" puts the Old side back into the lorebook; the text it replaces is saved here too, so nothing is lost. For a new entry, "Remove this entry" takes it out again (only while it is still exactly as created), and "Create it again" brings back a removed entry with all its settings.'));
+            $el('div', 'lorerev_dim', 'Every saved change is listed here, newest first. Click a row\'s header to fold or unfold it (newest starts open). "Restore old version" puts the Old side back into the lorebook; the text it replaces is saved here too, so nothing is lost. For a new entry, "Remove this entry" takes it out again (only while it is still exactly as created), and "Create it again" brings back a removed entry with all its settings. "Clear old history" (or a row\'s trash icon) removes old saved changes from History only; the lorebook itself is not changed.'));
+
+        if (archive?.records?.length) {
+            const $choice = $('<select class="text_pole lorerev_hist_clear_select">');
+            for (const c of CLEAR_CHOICES) $choice.append($('<option>').val(c.id).text(c.label));
+            $choice.val(clearSel).on('change', () => { clearSel = String($choice.val()); });
+            $top.append($el('div', 'lorerev_hist_clear').append(
+                $el('span', '', 'Clear old history:'), $choice,
+                $el('div', 'menu_button lorerev_btn_hist_clear', 'Clear…')
+                    .attr('title', 'Remove saved changes from this lorebook\'s History (all entries). You are asked first. The lorebook itself is not changed.')
+                    .on('click', clearOld)));
+        }
 
         const records = recordsFor(archive, filter);
         $list.empty();
@@ -72,11 +87,11 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
             $el('span', 'lorerev_pill', actionLabel(r.action)), r.edited ? $el('span', 'lorerev_pill lorerev_pill_edited', 'Edited by you') : '');
         title.on('click', () => { folded.set(r.id, !collapsed); $r.replaceWith(recordView(r, isNewest)); });
         $r.append(title);
-        if (collapsed) {
-            // Summary only: entry name, timestamp, action (and a short note if present)
-            if (r.instructions) title.append($el('span', 'lorerev_dim', ` · “${String(r.instructions).slice(0, 60)}${String(r.instructions).length > 60 ? '…' : ''}”`));
-            return $r;
-        }
+        // Summary only when folded: entry name, timestamp, action (and a short note if present)
+        if (collapsed && r.instructions) title.append($el('span', 'lorerev_dim', ` · “${String(r.instructions).slice(0, 60)}${String(r.instructions).length > 60 ? '…' : ''}”`));
+        title.append($el('span', 'lorerev_hist_del fa-solid fa-trash-can').attr('title', 'Delete this record from History (the lorebook is not changed)')
+            .on('click', (e) => { e.stopPropagation(); deleteOne(r); }));
+        if (collapsed) return $r;
         const info = [];
         if (r.instructions) info.push(`Your instructions: “${r.instructions}”`);
         if (r.request) info.push(`Extra request: “${r.request}”`);
@@ -145,6 +160,48 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
         const res = await restoreRecord(book, r, check.current);
         if (res.written) { toastr.success(res.message, 'LoreReviser'); onRestore?.(); } else toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
         await load();
+    }
+
+    /** Confirm text shared by Clear and the trash icon. */
+    function clearBody(heading, what, list) {
+        const body = $el('div', 'lorerev_hist_clear_confirm').append($el('h3', '', heading), $el('p', '', what), $el('p', '', KEEP_NOTE));
+        const copies = list.filter(r => removedByRecord(r) && r.snapshot).length;
+        if (copies) body.append($el('p', 'lorerev_warn', copies === 1
+            ? 'One of them holds the saved copy of a removed entry, so that entry can no longer be created again from History.'
+            : `${copies} of them hold saved copies of removed entries, so those entries can no longer be created again from History.`));
+        return body;
+    }
+
+    async function runClear(ids, how, done) {
+        const res = await clearHistoryRecords(book, ids, how);
+        if (!res.ok) toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
+        else if (!res.removed) toastr.info('Nothing was removed: those saved changes were already gone.', 'LoreReviser');
+        else toastr.success(done(res.removed), 'LoreReviser');
+        await load();
+    }
+
+    async function clearOld() {
+        const choice = clearChoice(clearSel);
+        const now = new Date();
+        const list = recordsToClear(archive, choice.id, now);
+        const total = archive?.records?.length ?? 0;
+        if (!list.length) {
+            toastr.info(choice.days === null ? 'Nothing to clear: there are no saved changes.' : `Nothing to clear: no saved changes are ${choice.label}.`, 'LoreReviser');
+            return;
+        }
+        const what = choice.days === null
+            ? `All ${changes(list.length)} in the History of “${book}” will be removed (every entry).`
+            : `${list.length === total ? 'All' : `${list.length} of the`} ${changes(total)} in the History of “${book}” ${list.length === 1 ? 'is' : 'are'} ${choice.label} (saved before ${new Date(now.getTime() - choice.days * 86400000).toLocaleString()}) and will be removed (every entry). Newer ones are kept.`;
+        const ok = await new Popup(clearBody('Clear old history?', what, list), POPUP_TYPE.CONFIRM, '', { okButton: `Remove ${list.length}`, cancelButton: 'Cancel' }).show();
+        if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
+        await runClear(list.map(r => r.id), choice.id, (n) => `Removed ${changes(n)} from the History of “${book}”. The lorebook was not changed.`);
+    }
+
+    async function deleteOne(r) {
+        const what = `The record “${actionLabel(r.action)}” for “${r.title || `Entry #${r.uid}`}” (#${r.uid}) from ${when(r.time)} will be removed from the History of “${book}”.`;
+        const ok = await new Popup(clearBody('Delete this History record?', what, [r]), POPUP_TYPE.CONFIRM, '', { okButton: 'Delete', cancelButton: 'Cancel' }).show();
+        if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
+        await runClear([r.id], 'one', () => `Removed that saved change from the History of “${book}”. The lorebook was not changed.`);
     }
 
     const popup = new Popup($root, POPUP_TYPE.TEXT, '', { wide: true, large: true, okButton: 'Close', cancelButton: false, allowVerticalScrolling: true, onOpen: load });
