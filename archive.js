@@ -3,7 +3,7 @@
 
 import { convertTextToBase64 } from '../../../utils.js';
 import { getSettings } from './settings.js';
-import { archiveFileName, isValidFileName, newArchive, normalizeArchive, relinkIndex } from './archive-core.js';
+import { ARCHIVE_PREFIX, archiveFileName, isValidFileName, newArchive, normalizeArchive, relinkIndex, removeRecords } from './archive-core.js';
 
 const ctx = () => SillyTavern.getContext();
 
@@ -76,5 +76,44 @@ export async function relinkArchive(from, to) {
         const archive = await readArchive(to);
         if (archive) { archive.renamedFrom = [...(archive.renamedFrom ?? []), from]; await writeArchive(to, archive); }
     } catch (e) { console.warn('[LoreReviser] relink: could not update the name inside the history file', e); }
+    return null;
+}
+
+/**
+ * Clear old history: takes the records with these ids out of a book's History file and writes it back (read, filter,
+ * re-upload, like appendRecord). The file and its index entry stay, even when no records are left. The lorebook itself
+ * is never read or written. Returns how many records were removed. Run it through apply.js's write queue.
+ */
+export async function removeArchiveRecords(book, ids, how = '') {
+    const archive = await readArchive(book);
+    if (!archive) return 0;
+    const removed = removeRecords(archive, ids, { how });
+    if (removed) await writeArchive(book, archive);
+    return removed;
+}
+
+/**
+ * Deletes a History file through ST's /api/files/delete and removes its index entry. Used only for orphaned files
+ * (their lorebook no longer exists). Refuses a file whose name is not one of ours, or whose content is not a
+ * LoreReviser history file (readArchive throws then). A file that is already gone just loses its index entry.
+ * Returns an error text, or null when done. Run it through apply.js's write queue.
+ */
+export async function deleteArchiveFile(book) {
+    const index = getArchiveIndex();
+    const file = index[book];
+    if (!file) return `There is no history file listed for "${book}".`;
+    if (!isValidFileName(file) || !file.startsWith(ARCHIVE_PREFIX)) return `The file ${file} is not a LoreReviser history file, so it was not deleted.`;
+    let archive;
+    try { archive = await readArchive(book); } catch (e) { return `${e?.message ?? e} It was not deleted.`; }
+    if (archive) {
+        const res = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers: ctx().getRequestHeaders(),
+            body: JSON.stringify({ path: `user/files/${file}` }),
+        });
+        if (!res.ok && res.status !== 404) return `Could not delete the history file ${file} (HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}).`;
+    }
+    delete index[book];
+    getSettings().save();
     return null;
 }

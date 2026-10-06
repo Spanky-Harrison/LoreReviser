@@ -15,7 +15,8 @@ import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
 import { budgetNote } from './budget.js';
 import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
 import { openHistory, openHistoryPicker } from './history.js';
-import { getArchiveIndex, relinkArchive } from './archive.js';
+import { getArchiveIndex, relinkArchive, readArchive } from './archive.js';
+import { deleteOrphanHistory } from './apply.js';
 import { findOrphans } from './archive-core.js';
 import { prepareCreateSession, sendCreateSession, loadBookEntries } from './create.js';
 import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, CREATE_RULES_NOTE } from './create-core.js';
@@ -467,7 +468,7 @@ export async function openModal() {
         if (!orphans.length) return;
         const targets = names.filter(n => !(n in index)).sort((a, b) => a.localeCompare(b));
         $orphans.append($('<div class="lorerev_sidebar_title lorerev_orphans_title">').text('Orphaned history files'),
-            $('<div class="lorerev_dim">').text('These lorebooks have saved History but no longer exist under that name (renamed or deleted). If one was renamed, pick its new name and press Relink. Nothing is deleted.'));
+            $('<div class="lorerev_dim">').text('These lorebooks have saved History but no longer exist under that name (renamed or deleted). If one was renamed, pick its new name and press Relink. If you deleted the lorebook on purpose and don\'t need its History, press Delete. Nothing is deleted without asking.'));
         for (const o of orphans) {
             const $sel = $('<select class="text_pole lorerev_relink_select">').append($('<option value="">Pick the lorebook…</option>'));
             for (const n of targets) $sel.append($('<option>').val(n).text(n));
@@ -484,9 +485,26 @@ export async function openModal() {
                         renderOrphans();
                     }),
                     $('<div class="menu_button lorerev_btn_orphan_hist">').text('View').attr('title', 'Look at this saved history (Restore needs the lorebook, so relink first)')
-                        .on('click', () => openHistory({ book: o.book }))));
+                        .on('click', () => openHistory({ book: o.book })),
+                    $('<div class="menu_button lorerev_btn_orphan_delete">').text('Delete').attr('title', 'Delete this history file (asks first; no lorebook is changed)')
+                        .on('click', () => deleteOrphan(o))));
             $orphans.append($o);
         }
+    }
+
+    async function deleteOrphan(o) {
+        let count = null;
+        try { count = (await readArchive(o.book))?.records?.length ?? 0; } catch { /* the delete itself reports a damaged file */ }
+        const n = count === null ? 'its saved changes' : `its ${count} saved change${count === 1 ? '' : 's'}`;
+        const body = $('<div class="lorerev_orphan_delete_confirm">').append(
+            $('<h3>').text('Delete this history file?'),
+            $('<p>').text(`The History of “${o.book}” (${n}) is deleted for good, and the file ${o.file} is removed from SillyTavern's user files.`),
+            $('<p>').text('No lorebook is changed. Only the saved old versions are removed, and once deleted they can\'t be restored. If the lorebook was only renamed, use Relink instead.'));
+        const ok = await new Popup(body, POPUP_TYPE.CONFIRM, '', { okButton: 'Delete', cancelButton: 'Cancel' }).show();
+        if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
+        const res = await deleteOrphanHistory(o.book);
+        if (res.ok) toastr.success(res.message, 'LoreReviser'); else toastr.warning(res.message, 'LoreReviser', { timeOut: 10000 });
+        renderOrphans();
     }
 
     // --- chat-style window ---

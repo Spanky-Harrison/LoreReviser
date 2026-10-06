@@ -3,9 +3,10 @@
 // Every write: load a fresh copy, check the entry still holds what we expect (never overwrite someone else's change
 // silently), set key / keysecondary / content only, save immediately, reload the World Info editor, archive a record.
 // Writes run one at a time (a second approval waits for the first), so two quick approvals can't overwrite each other.
+// Clearing History (removing records, deleting an orphaned History file) runs in the same queue; it never touches a lorebook.
 
 import { setWIOriginalDataValue, createWorldInfoEntry, deleteWIOriginalDataValue } from '../../../world-info.js';
-import { appendRecord, readArchive } from './archive.js';
+import { appendRecord, readArchive, removeArchiveRecords, deleteArchiveFile } from './archive.js';
 import { makeRecord, latestRecord, sameVersion, uidsInArchive, createdByRecord, removedByRecord } from './archive-core.js';
 import { settingsFrom, freeUid, nextDisplayIndex, entryMatches } from './create-core.js';
 
@@ -379,6 +380,42 @@ function recreateRemoved(book, record) {
         } catch (e) {
             console.error('[LoreReviser] recreate failed', e);
             return { written: false, message: `Not created: ${e?.message ?? e}` };
+        }
+    });
+}
+
+// ======================= clearing History (never touches a lorebook) =======================
+
+/**
+ * Removes History records by id (Clear old history, or the trash icon on one record). Only the History file is
+ * rewritten; the lorebook is not read or changed.
+ * @returns {Promise<{ok: boolean, removed: number, message: string}>}
+ */
+export function clearHistoryRecords(book, ids, how = '') {
+    return serial(async () => {
+        try {
+            const removed = await removeArchiveRecords(book, ids, how);
+            return { ok: true, removed, message: '' };
+        } catch (e) {
+            console.error('[LoreReviser] clearing History failed', e);
+            return { ok: false, removed: 0, message: `Nothing removed: ${e?.message ?? e}` };
+        }
+    });
+}
+
+/**
+ * Deletes an orphaned History file (its lorebook no longer exists) and its index entry.
+ * @returns {Promise<{ok: boolean, message: string}>}
+ */
+export function deleteOrphanHistory(book) {
+    return serial(async () => {
+        try {
+            if (ctx().getWorldInfoNames().includes(book)) return { ok: false, message: `Not deleted: the lorebook "${book}" exists again. Use "Clear old history" in its History instead.` };
+            const err = await deleteArchiveFile(book);
+            return err ? { ok: false, message: `Not deleted: ${err}` } : { ok: true, message: `The history file of "${book}" was deleted.` };
+        } catch (e) {
+            console.error('[LoreReviser] deleting History file failed', e);
+            return { ok: false, message: `Not deleted: ${e?.message ?? e}` };
         }
     });
 }

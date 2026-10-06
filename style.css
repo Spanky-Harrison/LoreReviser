@@ -180,3 +180,10 @@
 .lorerev_pill.lorerev_pill_new { background: rgba(60, 170, 110, 0.35); }
 .lorerev_new_title b { font-weight: bold; }
 .lorerev_create_settings { margin: 2px 0 6px; }
+/* clearing History */
+.lorerev_hist_clear { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.lorerev_hist_clear_select { width: auto; max-width: 100%; margin: 0; }
+.lorerev_hist .lorerev_hist_clear .menu_button { margin: 0; }
+.lorerev_hist_del { margin-left: auto; cursor: pointer; opacity: 0.5; padding: 2px 4px; }
+.lorerev_hist_del:hover { opacity: 1; color: #e07a6a; }
+.lorerev_hist_clear_confirm, .lorerev_orphan_delete_confirm { text-align: left; }
