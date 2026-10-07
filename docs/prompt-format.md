@@ -2,14 +2,14 @@
 
 LoreReviser builds one request itself and sends it on the chosen Connection Manager profile. This file describes it;
 the code is in `prompt.js` (building), `parse.js` (reading the reply) and `revision.js` (sending).
-The example below is a real request captured by the test suite (`tests/e2e-revision.mjs`) with depth 3.
+The example below is a real request captured by the test suite (`tests/e2e-revision.mjs`) with depth 3 and the **Full rewrite** reply style; with **Changed passages only** (the default) only the last part of the system message, the reply-format rules, is different (see "Reply style" below).
 
 ## Request
 
-Two chat messages, plus `max_tokens` (the "Reply tokens" setting, or automatic: about 2x the size of the selected entries + 2500, between 4096 and 32000).
+Two chat messages, plus `max_tokens` (the "Reply tokens" setting, or automatic: about 2x the size of the selected entries + 2500 for Full rewrite, about 1.25x + 2500 for Changed passages only (Heavy-handed keeps 2x, because it may change most of the text); always between 4096 and 32000).
 The profile's preset supplies the sampler settings (temperature etc.). For a text-completion profile the two messages are turned into one string with the profile's instruct template (`ConnectionManagerRequestService.constructPrompt`; untested).
 
-1. **system** = the editable system prompt from the modal + a **"Rewrite intensity"** section (Light touch / Balanced / Heavy-handed, chosen in the modal) + a **"Change type"** section (Development / Retcon, chosen in the modal) + the **"Reply format (strict)"** rules. All four parts are editable in the modal (see "Editing the system message" below); with no edits the text is exactly the defaults documented here. The fixed rules and the default system prompt both tell the model to **maintain all current formatting** of every entry (markdown, line breaks, bracket/tag styles, field layouts, list styles, casing, macros, decorators, regex keys) unless the instructions require otherwise.
+1. **system** = the editable system prompt from the modal + a **"Rewrite intensity"** section (Light touch / Balanced / Heavy-handed, chosen in the modal) + a **"Change type"** section (Development / Retcon, chosen in the modal) + the **"Reply format (strict)"** rules for the chosen **Reply style** (Changed passages only, or Full rewrite). All four parts are editable in the modal (see "Editing the system message" below); with no edits the text is exactly the defaults documented here. The fixed rules and the default system prompt both tell the model to **maintain all current formatting** of every entry (markdown, line breaks, bracket/tag styles, field layouts, list styles, casing, macros, decorators, regex keys) unless the instructions require otherwise.
 
 **Existing headings and field labels are never changed.** Every default part (the system prompt, each Rewrite intensity wording, each Change type wording, the reply-format rules, and the new-entry prompt and rules) tells the model to keep the headings and field labels an entry already has (`HEIGHT:`, `Hair:`, `[Appearance]`, `## Background` ...) exactly as written, character for character: no renaming, rewording, re-casing, misspelling or invented variants (such as `HEIGHT` → `HIGHT` or `HAIR` → `HAIIR`), unless the user explicitly asks to rename one. Heavy-handed may move or merge sections but keeps their headings; Development records a before and after in a new field rather than renaming an existing one. For new entries this applies to labels taken from the format example or the existing lore.
 
@@ -37,6 +37,50 @@ A JSON array. Only changed entries; everything else is left out:
 - If nothing can be read, the raw reply is shown in the chat window. The raw reply of every request is also available under "Raw reply" in each revision.
 - Warnings (shown on the card, never blocking): a leading `@@decorator` line, a `/regex/` key, or a `{{macro}}` that the original had and the proposal lacks.
 
+## Reply style: Changed passages only (default) / Full rewrite
+
+Chosen in the modal header ("Reply style"), saved in `settings.replyStyle` (`passages` | `full`, default `passages`). It only changes the reply-format rules at the end of the system message (and the automatic reply budget); the user message is the same, and every selected entry is still sent in full so the model can quote from it. Used on Send and Retry missing entries (the style of the Send) and on Regenerate (the style chosen *now*). New entries always use full text.
+
+With **Changed passages only** the model replies:
+
+```json
+[{"id": "E2", "edits": [{"find": "54 years old", "replace": "55 years old"}, {"after": "Stern but fair monarch,", "insert": " called Maren the Wise,"}], "keys": ["Maren", "queen", "Maren the Wise"], "note": "one short sentence"}]
+```
+
+- `edits`: `{"find", "replace"}` replaces a passage (`""` deletes it); `{"after" | "before": passage, "insert": text}` adds text next to a passage. Common variants are accepted too (`old`/`new`, `search`/`replace`, `[find, replace]` pairs, an `edits` object instead of a list). `keys` / `secondary_keys` as with Full rewrite (only when they change). Entries without a change are left out.
+- **Applying** (`passages.js`): each passage is looked up in the entry's original text (never in the result of another edit): exactly first; if that fails, tolerantly (runs of spaces/tabs/line breaks count as one space, `\r\n` = `\n`, curly = straight quotes, all dashes = `-`, `…` = `...`, zero-width characters ignored; a `find` with literal `\n` from double-escaped JSON is retried with real line breaks), mapped back to the exact span of the original. It must occur exactly once. The edits are applied in text order and must not overlap (touching is fine; an identical edit sent twice counts once). With a CRLF entry, inserted line breaks become CRLF.
+- The result is the attempt's complete new text, so the cards, Changes / Full Compare / New / Old, Edit proposal, Approve and History treat it exactly like a full rewrite. The attempt line says "Reply: N changed passages, put into the full text".
+- **All or nothing:** if any edit of an entry can't be placed (not found, ambiguous, overlapping, or malformed), nothing is applied to that entry. It is shown as **Couldn't apply** with the list of passages and the reason for each, and offers **Retry this entry as a full rewrite**, Regenerate and Edit. The retry is a regeneration request for just that entry with the **Full rewrite** rules and this extra sentence in `<regeneration_request>`: *Your last reply for entry E2 sent "find" passages that could not be located in the entry's text, so nothing was applied. This time reply with the complete new text of the entry in "content" (no "edits").* It does not change the Reply style setting.
+- A reply element without `edits` but with a full `content` is used as a full rewrite in either style (the card says "the model sent the whole text instead of passages"); with both, `edits` wins.
+
+The default rules for Changed passages only:
+
+```
+## Reply format (strict)
+Reply with ONE JSON array and nothing else: no commentary before or after it, no markdown code fences.
+Do NOT write out whole entries. Send only the passages you change, as find/replace edits; LoreReviser puts them into the entry's full text itself.
+Each element revises one entry from <entries_to_revise>:
+{"id": "E1", "edits": [{"find": "exact passage copied from the entry", "replace": "new text for that passage"}], "keys": ["..."], "secondary_keys": ["..."], "note": "..."}
+
+Rules:
+- "id" is copied exactly from the entry's id attribute (E1, E2, ...).
+- Include ONLY entries you changed. Leave out every entry that needs no change. If nothing needs changing, reply [].
+- "edits": one object per changed passage, in the order they appear in the entry. Leave "edits" out if only the keys change.
+- "find" is copied VERBATIM from the entry's <content> in <entries_to_revise>, character for character: same spelling, capitalisation, punctuation, quote marks, spacing and line breaks (written as \n). Never paraphrase it, fix typos in it, or shorten it with "...".
+- Keep each "find" short but unique: usually one sentence, one line or one "Label: value" field, and it must occur exactly once in that entry. If a short passage occurs more than once, add a few neighbouring words until it is unique.
+- "replace" is the complete new text for exactly that passage (it replaces only the "find" text). Use "" to delete the passage.
+- To add new text without changing anything, use {"after": "exact passage from the entry", "insert": "new text"}. Start "insert" with \n to put it on a new line, or with a space to continue the same line. You may also quote a short neighbouring passage in "find" and repeat it in "replace" together with the new text.
+- Edits must not overlap: never quote the same text in two edits. Every "find" and "after" refers to the entry's text as given in <entries_to_revise>, not to the result of another edit or to a previous attempt.
+- For large rewrites use one edit per changed paragraph or line; unchanged text between them stays as it is.
+- "keys" and "secondary_keys": the complete new list of trigger keys. Leave a field out if that list stays the same.
+- "note": one short sentence saying what you changed and why.
+- Maintain ALL current formatting of each entry unless the instructions require otherwise: markdown, line breaks and blank lines, bracket or tag styles ([Name: ...], <tag>), field layouts ("Key: value" lines), list styles and bullet characters, casing conventions, {{macros}}, @@decorator lines at the start of the content, and /regex/ keys. Text you add or replace must use the same layout as the text around it.
+- Copy every existing heading and field label exactly, character for character (such as "HEIGHT:", "Hair:", "[Appearance]", "## Background"): same spelling, casing, punctuation and symbols. Never rename, misspell, re-case or invent a variant of one (HEIGHT -> HIGHT or HAIR -> HAIIR is an error). When a "find" includes a heading or label, "replace" must contain it unchanged. Change a heading only if the user explicitly asks you to rename it.
+- The reply must be valid JSON: escape double quotes inside strings as \" and line breaks as \n.
+```
+
+The Full rewrite rules are in the example request below. Both sets are editable (see "Editing the system message").
+
 ## Regenerate (swipe-style)
 
 Same request, but `<entries_to_revise>` holds only that entry, plus:
@@ -54,6 +98,7 @@ The user wants a new version of entry E2. Write a different, better version than
 
 The extra request comes from the always-visible box on the card (multi-line, optional); each attempt remembers the request that produced it and the model sees it again as `user_request` on the next regeneration. The rewrite intensity chosen in the modal *at that moment* applies to the regeneration (each attempt shows the intensity it was made with). The character card, lore and chat history are reused from the original Send (not recomputed), so attempts are comparable.
 For an entry that had "No changes", the request says the first pass found no change and asks for a second look.
+With Changed passages only, `<regeneration_request>` also says: *Your edits are applied to the entry's text as given in <entries_to_revise>, not to a previous attempt: copy every "find" from that text.* (The previous attempts are shown as full text; the new edits are applied to the original entry, not to an attempt.) If the regeneration's edits can't be placed, no attempt is added; the card keeps its attempts and shows the passages that didn't fit, with "Retry this entry as a full rewrite".
 
 ## Editing the system message
 
@@ -61,11 +106,11 @@ The system message is four pieces, joined by blank lines: `system prompt` + `## 
 
 - **Rewrite intensity wording:** one text box per level (Light touch / Balanced / Heavy-handed), each with its own **Restore default** button. Only the wording of the chosen level is sent. The heading line `## Rewrite intensity: <Label>` is added by LoreReviser and cannot be edited, so the default system prompt's guideline "Follow the 'Rewrite intensity' section" stays valid whatever you write (if you edit the system prompt itself, keep that reference or drop it).
 - **Change type wording:** the same for the two change types (Development / Retcon), see below. The heading `## Change type: <Label>` is fixed, so the system prompt's guideline "Follow the 'Change type' section" stays valid.
-- **Reply format rules (advanced):** the rules below, sent last. **Restore default** puts the original back.
+- **Reply format rules (advanced):** the rules, sent last: one set for **Changed passages only** and one for **Full rewrite**, each with its own **Restore default**. Only the set for the chosen Reply style is sent.
 
-Storage (`settings.intensityTexts`, `settings.changeTypeTexts`, `settings.formatRules`): only real edits are saved (`{ light: "..." }` and a string). An empty box, or text equal to the default, removes the override, so a later improvement of the defaults reaches you. A box left empty is refilled with the default text.
+Storage (`settings.intensityTexts`, `settings.changeTypeTexts`, `settings.formatRules` for Full rewrite, `settings.passageFormatRules` for Changed passages only; rules customized before the Reply style existed are in `formatRules` and keep working for Full rewrite): only real edits are saved (`{ light: "..." }` and a string). An empty box, or text equal to the default, removes the override, so a later improvement of the defaults reaches you. A box left empty is refilled with the default text.
 
-**Safeguard for the reply format.** LoreReviser can only read a reply that is a JSON array of `{id, keys?, secondary_keys?, content?, note?}` objects (see "Reply" below). While you edit the rules, a warning is shown if they no longer mention JSON, an array, `id` or `content`; the same warning is added to the chat when you send (sending is not blocked). The check is a heuristic, it cannot prove your wording works; if the model's answer cannot be read, the chat shows the usual error, and Restore default brings back the working rules.
+**Safeguard for the reply format.** LoreReviser can only read a reply that is a JSON array of `{id, keys?, secondary_keys?, content?, note?}` objects (Full rewrite, see "Reply") or `{id, edits?: [{find, replace}], keys?, secondary_keys?, note?}` objects (Changed passages only). While you edit the rules, a warning is shown if they no longer mention JSON, an array, `id` or `content` (Full rewrite) / JSON, an array, `id`, `edits`, `find` and `replace` (Changed passages only); the same warning is added to the chat when you send (sending is not blocked). The check is a heuristic, it cannot prove your wording works; if the model's answer cannot be read, the chat shows the usual error, and Restore default brings back the working rules.
 
 ## Rewrite intensity wording (defaults)
 

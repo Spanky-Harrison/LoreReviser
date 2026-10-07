@@ -5,8 +5,9 @@ import { normalizeDepth, sliceByDepth, depthLabel } from '../depth.js';
 import { removeBlock, dedupeLore, assembleLore } from '../dedupe.js';
 import { INTENSITIES, DEFAULT_INTENSITY, normalizeIntensity, intensitySection, intensityText } from '../intensity.js';
 import { CHANGE_TYPES, DEFAULT_CHANGE_TYPE, normalizeChangeType, changeTypeText, changeTypeSection } from '../changetype.js';
-import { wiBudget, wiScanContext, budgetNote } from '../budget.js';
-import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE } from '../rules.js';
+import { wiBudget, wiScanContext, budgetNote, autoReplyTokens } from '../budget.js';
+import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RULES_NOTE, DEFAULT_PASSAGE_RULES, checkPassageRules, effectivePassageRules, PASSAGE_RULES_NOTE, REPLY_STYLES, DEFAULT_REPLY_STYLE, normalizeReplyStyle, rulesForStyle, checkRulesForStyle } from '../rules.js';
+import { readEdits, applyEdits, locate, normalizeWithMap, contentFromReply, failureReason } from '../passages.js';
 import { DEFAULT_SYSTEM_PROMPT, getSettings, LEGACY_DEFAULT_PROMPTS, LEGACY_CREATE_PROMPTS } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff, sentenceSpans, proposalHunks, applyHunkEdits } from '../diff.js';
 import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear, removeRecords } from '../archive-core.js';
@@ -523,4 +524,127 @@ t('settings: untouched old default prompts are upgraded, edited ones are kept', 
     assert.equal(settings.systemPrompt, LEGACY_DEFAULT_PROMPTS[0] + ' (my addition)'); assert.equal(settings.createSystemPrompt, 'My own create prompt');
     delete globalThis.SillyTavern;
 });
+
+// ---------- "Changed passages only" reply style: edit applier, parsing, rules, budget ----------
+const R = (anchor, text) => ({ kind: 'replace', anchor, text });
+const FEST = 'HEIGHT: 5\'2"\nHair: brown, “wavy”.\nShe is stern — and fair.\n\nShe likes tea. She likes tea.';
+t('passages: exact single replace', () => {
+    const r = applyEdits(FEST, [R('HEIGHT: 5\'2"', 'HEIGHT: 5\'3"')]);
+    assert.equal(r.ok, true); assert.equal(r.content, FEST.replace('5\'2"', '5\'3"')); assert.equal(r.placed[0].how, 'exact');
+});
+t('passages: multiple edits applied in text order, regardless of reply order', () => {
+    const r = applyEdits(FEST, [R('She is stern — and fair.', 'She is kind.'), R('Hair: brown, “wavy”.', 'Hair: grey.')]);
+    assert.equal(r.ok, true); assert.equal(r.content, 'HEIGHT: 5\'2"\nHair: grey.\nShe is kind.\n\nShe likes tea. She likes tea.');
+});
+t('passages: tolerant match - straight quotes for smart quotes, hyphen for em dash, collapsed whitespace', () => {
+    const r = applyEdits(FEST, [R('Hair: brown, "wavy".', 'Hair: grey.'), R('She is  stern - and\nfair.', 'She is kind.')]);
+    assert.equal(r.ok, true); assert.ok(r.placed.every(p => p.how === 'tolerant'));
+    assert.equal(r.content, 'HEIGHT: 5\'2"\nHair: grey.\nShe is kind.\n\nShe likes tea. She likes tea.');
+});
+t('passages: tolerant match maps back to original offsets (smart quotes in the text stay outside the match)', () => {
+    const loc = locate('A “b” c', 'A "b" c'); assert.equal(loc.how, 'tolerant'); assert.equal(loc.start, 0); assert.equal(loc.end, 7);
+    const loc2 = locate('one\r\ntwo   three', 'one\ntwo three'); assert.deepEqual([loc2.start, loc2.end, loc2.how], [0, 16, 'tolerant']);
+    const loc3 = locate('Wait… what', 'Wait... what'); assert.deepEqual([loc3.start, loc3.end], [0, 10]);
+});
+t('passages: CRLF text - LF passage found, replacement keeps CRLF', () => {
+    const r = applyEdits('a\r\nb\r\nc', [R('b\nc', 'B\nC')]);
+    assert.equal(r.ok, true); assert.equal(r.content, 'a\r\nB\r\nC');
+});
+t('passages: tolerant match drops the whitespace around the quoted passage from the replacement too', () => {
+    const r = applyEdits('Line one.\nLine two.', [R('\nLine  two.', '\nLine 2.')]);
+    assert.equal(r.ok, true); assert.equal(r.content, 'Line one.\nLine 2.');
+});
+t('passages: literal \\n in find (double-escaped JSON) still matches', () => {
+    const r = applyEdits('Hair: brown\nEyes: blue', [R('Hair: brown\\nEyes: blue', 'Hair: grey\nEyes: blue')]);
+    assert.equal(r.ok, true); assert.equal(r.content, 'Hair: grey\nEyes: blue');
+});
+t('passages: not found -> failure, nothing applied (no partial edits)', () => {
+    const r = applyEdits(FEST, [R('Hair: grey', 'x'), R('She is stern — and fair.', 'She is kind.')]);
+    assert.equal(r.ok, false); assert.equal(r.content, FEST);
+    assert.deepEqual(r.failures.map(f => [f.index, f.reason]), [[0, 'not_found']]);
+    assert.match(failureReason(r.failures[0]), /not in the entry/);
+});
+t('passages: ambiguous (occurs twice) -> failure with the count', () => {
+    const r = applyEdits(FEST, [R('She likes tea.', 'She likes coffee.')]);
+    assert.equal(r.ok, false); assert.equal(r.failures[0].reason, 'ambiguous'); assert.equal(r.failures[0].count, 2);
+    assert.match(failureReason(r.failures[0]), /appears 2 times/);
+    assert.equal(locate('a “x” b ”x“', '"x"').error, 'ambiguous'); // tolerant ambiguity too
+});
+t('passages: overlapping edits -> both reported, nothing applied', () => {
+    const r = applyEdits(FEST, [R('Hair: brown', 'Hair: grey'), R('brown, “wavy”', 'black')]);
+    assert.equal(r.ok, false); assert.deepEqual(r.failures.map(f => [f.index, f.reason, f.other]), [[0, 'overlap', 1], [1, 'overlap', 0]]);
+    assert.match(failureReason(r.failures[0]), /overlaps edit 2/);
+});
+t('passages: adjacent (touching) edits are fine; identical duplicate edits count once', () => {
+    const r = applyEdits('abcdef', [R('abc', 'X'), R('def', 'Y'), R('def', 'Y')]);
+    assert.equal(r.ok, true); assert.equal(r.content, 'XY');
+});
+t('passages: insertion after / before an anchor', () => {
+    const r = applyEdits('HEIGHT: 5\nHair: brown', [{ kind: 'after', anchor: 'HEIGHT: 5', text: '\nEYES: green' }, { kind: 'before', anchor: 'HEIGHT', text: '[Body]\n' }]);
+    assert.equal(r.ok, true); assert.equal(r.content, '[Body]\nHEIGHT: 5\nEYES: green\nHair: brown');
+    const r2 = applyEdits('A. B.', [R('A.', 'A.'), { kind: 'after', anchor: 'A.', text: ' New.' }]); // insert right after a replaced passage
+    assert.equal(r2.ok, true); assert.equal(r2.content, 'A. New. B.');
+    const r3 = applyEdits('One two three', [R('two', 'TWO'), { kind: 'after', anchor: 'One t', text: 'X' }]); // insertion inside a replaced range
+    assert.equal(r3.ok, false); assert.equal(r3.failures[0].reason, 'overlap');
+});
+t('passages: insertion via find+replace that repeats the anchor', () => {
+    const r = applyEdits('Hair: brown\nEyes: blue', [R('Hair: brown', 'Hair: brown\nScar: left cheek')]);
+    assert.equal(r.content, 'Hair: brown\nScar: left cheek\nEyes: blue');
+});
+t('passages: delete with replace ""; empty find fails unless the entry is empty', () => {
+    assert.equal(applyEdits('Keep. Drop this. Keep.', [R(' Drop this.', '')]).content, 'Keep. Keep.');
+    assert.equal(applyEdits('Text', [R('', 'x')]).failures[0].reason, 'empty');
+    assert.equal(applyEdits('', [R('', 'Brand new text')]).content, 'Brand new text');
+});
+t('passages: no edits -> unchanged text', () => {
+    const r = applyEdits(FEST, []); assert.equal(r.ok, true); assert.equal(r.content, FEST);
+});
+t('passages: normalizeWithMap', () => {
+    const m = normalizeWithMap('a \u00a0\n b—“c”');
+    assert.equal(m.text, 'a b-"c"'); assert.deepEqual([m.starts[1], m.ends[1]], [1, 5]);
+});
+t('passages: readEdits accepts the documented shapes and common variants', () => {
+    const r = readEdits({ id: 'E1', edits: [{ find: 'a', replace: 'b' }, { after: 'c', insert: 'd' }, { before: 'e', insert: 'f' }, ['g', 'h'], { old: 'i', new: 'j' }, { search: 'k', replace: '' }] });
+    assert.deepEqual(r.edits.map(e => [e.kind, e.anchor, e.text]), [['replace', 'a', 'b'], ['after', 'c', 'd'], ['before', 'e', 'f'], ['replace', 'g', 'h'], ['replace', 'i', 'j'], ['replace', 'k', '']]);
+    assert.equal(r.invalid.length, 0);
+    assert.equal(readEdits({ id: 'E1', content: 'x' }), null);
+    assert.equal(readEdits({ changes: { find: 'a', replace: 'b' } }).edits.length, 1); // single object
+    const bad = readEdits({ edits: [{ find: 'a' }, 'text', { replace: 'x' }] });
+    assert.equal(bad.edits.length, 0); assert.deepEqual(bad.invalid.map(x => x.index), [0, 1, 2]);
+});
+t('passages: contentFromReply - edits, full content fallback, keys only, invalid edit fails the entry', () => {
+    assert.deepEqual(contentFromReply({ edits: [{ find: 'old', replace: 'new' }] }, 'the old text'), { content: 'the new text', edits: [{ kind: 'replace', anchor: 'old', text: 'new', index: 0 }], failures: [], source: 'edits', total: 1 });
+    assert.equal(contentFromReply({ content: 'whole new text' }, 'x').source, 'content');
+    assert.equal(contentFromReply({ content: 'whole new text' }, 'x').content, 'whole new text');
+    assert.deepEqual(contentFromReply({ keys: ['a'] }, 'x'), { content: 'x', edits: null, failures: [], source: 'none', total: 0 });
+    const f = contentFromReply({ edits: [{ find: 'old', replace: 'new' }, { find: 'gone' }] }, 'the old text');
+    assert.equal(f.content, 'the old text'); assert.equal(f.failures.length, 1); assert.equal(f.failures[0].kind, 'invalid'); assert.equal(f.total, 2);
+    assert.equal(contentFromReply({ edits: [{ find: 'old', replace: 'new' }], content: 'ignored' }, 'the old text').content, 'the new text'); // edits win
+});
+t('passages: parse a full passages reply (fences, raw newline inside a string, truncated second entry)', () => {
+    const r = P('```json\n[{"id":"E1","edits":[{"find":"Hair: brown","replace":"Hair: grey\nScar: yes"}],"note":"n"},{"id":"E2","edits":[{"find":"x","repl');
+    assert.equal(r.truncated, true); assert.equal(r.entries.length, 1); assert.equal(r.entries[0].edits[0].replace, 'Hair: grey\nScar: yes');
+    const ok = P('[{"id":"E1","edits":[{"find":"a \\"b\\"","replace":"c"}]}]');
+    assert.equal(ok.entries[0].edits[0].find, 'a "b"');
+});
+t('rules: reply styles, separate defaults, checks and effective rules', () => {
+    assert.equal(DEFAULT_REPLY_STYLE, 'passages'); assert.deepEqual(Object.keys(REPLY_STYLES), ['passages', 'full']);
+    assert.equal(normalizeReplyStyle('full'), 'full'); assert.equal(normalizeReplyStyle('nope'), 'passages'); assert.equal(normalizeReplyStyle(undefined), 'passages');
+    assert.deepEqual(checkPassageRules(DEFAULT_PASSAGE_RULES), []);
+    assert.ok(checkPassageRules('Reply with a JSON array of {id, content}.').some(p => /find/.test(p)));
+    assert.deepEqual(checkPassageRules(''), ['the rules are empty']);
+    assert.match(PASSAGE_RULES_NOTE, /find, replace/);
+    for (const x of ['VERBATIM', 'short but unique', '"after"', 'must not overlap', 'Copy every existing heading and field label exactly', 'Maintain ALL current formatting', 'or to a previous attempt']) assert.ok(DEFAULT_PASSAGE_RULES.includes(x), x);
+    assert.equal(effectivePassageRules(''), DEFAULT_PASSAGE_RULES); assert.equal(effectivePassageRules('mine'), 'mine');
+    assert.equal(rulesForStyle('passages', { formatRules: 'FULL MINE' }), DEFAULT_PASSAGE_RULES);
+    assert.equal(rulesForStyle('full', { formatRules: 'FULL MINE', passageRules: 'P MINE' }), 'FULL MINE'); // customised full rules keep working
+    assert.equal(rulesForStyle('passages', { formatRules: 'FULL MINE', passageRules: 'P MINE' }), 'P MINE');
+    assert.equal(rulesForStyle('full', {}), DEFAULT_FORMAT_RULES);
+    assert.deepEqual(checkRulesForStyle('full', DEFAULT_FORMAT_RULES), []); assert.ok(checkRulesForStyle('passages', DEFAULT_FORMAT_RULES).length > 0);
+});
+t('budget: automatic reply tokens are smaller for changed passages (except heavy-handed), same floor and cap', () => {
+    assert.equal(autoReplyTokens(3000, 'full'), 8500); assert.equal(autoReplyTokens(3000, 'passages'), 6250);
+    assert.equal(autoReplyTokens(3000, 'passages', 'heavy'), 8500); assert.equal(autoReplyTokens(10, 'passages'), 4096); assert.equal(autoReplyTokens(100000, 'full'), 32000);
+});
+
 console.log(`${n} unit tests passed`);

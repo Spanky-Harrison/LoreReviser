@@ -13,7 +13,7 @@ import { normalizeDepth, depthLabel } from './depth.js';
 import { INTENSITIES, normalizeIntensity } from './intensity.js';
 import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
 import { budgetNote } from './budget.js';
-import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE } from './rules.js';
+import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE, DEFAULT_PASSAGE_RULES, checkPassageRules, PASSAGE_RULES_NOTE, REPLY_STYLES, normalizeReplyStyle, checkRulesForStyle } from './rules.js';
 import { openHistory, openHistoryPicker } from './history.js';
 import { getArchiveIndex, relinkArchive, readArchive } from './archive.js';
 import { deleteOrphanHistory } from './apply.js';
@@ -79,10 +79,12 @@ const TEMPLATE = `
             <select id="lorerev_intensity" class="text_pole">${Object.entries(INTENSITIES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
         <label title="What kind of change this is. Development: a progression in the story, the lore may describe before/after and what changed. Retcon: the existing reality is corrected and must be written as though it was always true, without acknowledging any change.">Change
             <select id="lorerev_changetype" class="text_pole">${Object.entries(CHANGE_TYPES).map(([k, v]) => `<option value="${k}" title="${v.title}">${v.label}</option>`).join('')}</select></label>
+        <label class="lorerev_revise_only" title="How the model answers when revising existing entries. Changed passages only: it sends just the passages it changes (find / replace) and LoreReviser puts them into the full text, so replies are much shorter. Full rewrite: it sends the whole new text of every changed entry. New entries are always written in full.">Reply style
+            <select id="lorerev_replystyle" class="text_pole">${Object.entries(REPLY_STYLES).map(([k, v]) => `<option value="${k}" title="${v.title}">${v.label}</option>`).join('')}</select></label>
         <label title="Send only the last X chat messages. 0 = whole chat. -1 = no chat at all.">Depth
             <input id="lorerev_depth" type="number" min="-1" step="1" class="text_pole"></label>
         <span id="lorerev_depth_info" class="lorerev_dim"></span>
-        <label title="Maximum tokens for the model's reply. 0 = automatic (based on the size of the selected entries).">Reply tokens
+        <label title="Maximum tokens for the model's reply. 0 = automatic (based on the size of the selected entries and the reply style).">Reply tokens
             <input id="lorerev_reply" type="number" min="0" step="100" class="text_pole"></label>
         <label title="Context size used for the 'prompt may be too large' warning. 0 = take it from the profile's preset.">Context
             <input id="lorerev_context" type="number" min="0" step="1000" class="text_pole"></label>
@@ -123,11 +125,22 @@ const TEMPLATE = `
                 </div>`).join('')}
             </details>
             <details class="lorerev_system" id="lorerev_rules_box">
-                <summary>Reply format rules (advanced) <span class="lorerev_edited" id="lorerev_rules_edited"></span></summary>
-                <div class="lorerev_dim">Appended to the system message, last. They tell the model how to answer so LoreReviser can read the reply. Keep it a JSON array of objects with an <code>id</code> (a warning appears below if an edit would break that).</div>
-                <div id="lorerev_rules_warn" class="lorerev_rules_warn" style="display:none"></div>
-                <textarea id="lorerev_rules" class="text_pole" rows="10"></textarea>
-                <div class="menu_button lorerev_restore" id="lorerev_rules_reset" title="Put the original reply format rules back">Restore default</div>
+                <summary>Reply format rules (advanced) <span class="lorerev_edited" id="lorerev_rules_box_edited"></span></summary>
+                <div class="lorerev_dim">Appended to the system message, last. They tell the model how to answer so LoreReviser can read the reply. There is one set per <b>Reply style</b> (chosen at the top); only the set for the chosen style is sent. A warning appears below a set if an edit would break reading the reply.</div>
+                <div class="lorerev_part" id="lorerev_prules_part">
+                    <div class="lorerev_part_head"><b>Changed passages only</b> <span class="lorerev_edited" id="lorerev_prules_edited"></span>
+                        <div class="menu_button lorerev_restore" id="lorerev_prules_reset" title="Put the original rules for “Changed passages only” back">Restore default</div></div>
+                    <div class="lorerev_dim">Keep it a JSON array of objects with an <code>id</code> and an <code>edits</code> list of <code>{find, replace}</code>.</div>
+                    <div id="lorerev_prules_warn" class="lorerev_rules_warn" style="display:none"></div>
+                    <textarea id="lorerev_prules" class="text_pole" rows="10"></textarea>
+                </div>
+                <div class="lorerev_part" id="lorerev_rules_part">
+                    <div class="lorerev_part_head"><b>Full rewrite</b> <span class="lorerev_edited" id="lorerev_rules_edited"></span>
+                        <div class="menu_button lorerev_restore" id="lorerev_rules_reset" title="Put the original rules for “Full rewrite” back">Restore default</div></div>
+                    <div class="lorerev_dim">Keep it a JSON array of objects with an <code>id</code> and the full <code>content</code>.</div>
+                    <div id="lorerev_rules_warn" class="lorerev_rules_warn" style="display:none"></div>
+                    <textarea id="lorerev_rules" class="text_pole" rows="10"></textarea>
+                </div>
             </details>
             <details class="lorerev_system" id="lorerev_create_box">
                 <summary>New entry prompt <span class="lorerev_edited" id="lorerev_create_edited"></span></summary>
@@ -191,6 +204,9 @@ export async function openModal() {
     $changeType.on('change', () => { settings.changeType = normalizeChangeType($changeType.val()); save(); });
     const $intensity = $root.find('#lorerev_intensity').val(normalizeIntensity(settings.intensity));
     $intensity.on('change', () => { settings.intensity = normalizeIntensity($intensity.val()); save(); });
+
+    const $replyStyle = $root.find('#lorerev_replystyle').val(normalizeReplyStyle(settings.replyStyle));
+    $replyStyle.on('change', () => { settings.replyStyle = normalizeReplyStyle($replyStyle.val()); save(); });
 
     const $depth = $root.find('#lorerev_depth').val(settings.depth);
     const updateDepthInfo = () => {
@@ -276,25 +292,33 @@ export async function openModal() {
     });
     refreshCtMarks();
 
-    // --- reply format rules, with a warning when they would break the parser ---
-    const $rules = $root.find('#lorerev_rules').val(settings.formatRules || DEFAULT_FORMAT_RULES);
-    const $rulesWarn = $root.find('#lorerev_rules_warn');
-    const refreshRules = () => {
-        const v = String($rules.val());
-        const problems = checkFormatRules(v);
-        if (problems.length) {
-            $rulesWarn.text(`Warning: these rules may break reading the reply (${problems.join('; ')}). ${FORMAT_RULES_NOTE} If the model does not answer in that format, no changes can be shown. Use "Restore default" to go back to the original rules.`).show();
-        } else $rulesWarn.hide().text('');
-        markEdited($root.find('#lorerev_rules_edited'), !!settings.formatRules);
-    };
-    $rules.on('input', () => {
-        const v = String($rules.val());
-        if (!v.trim() || v.trim() === DEFAULT_FORMAT_RULES.trim()) settings.formatRules = ''; else settings.formatRules = v;
-        refreshRules(); save();
-    });
-    $rules.on('change', () => { if (!String($rules.val()).trim()) { $rules.val(DEFAULT_FORMAT_RULES); refreshRules(); } });
-    $root.find('#lorerev_rules_reset').on('click', () => $rules.val(DEFAULT_FORMAT_RULES).trigger('input'));
-    refreshRules();
+    // --- reply format rules, one set per reply style, each with a warning when it would break the parser ---
+    const ruleSets = [
+        { key: 'passageFormatRules', box: '#lorerev_prules', warn: '#lorerev_prules_warn', mark: '#lorerev_prules_edited', reset: '#lorerev_prules_reset', def: DEFAULT_PASSAGE_RULES, check: checkPassageRules, note: PASSAGE_RULES_NOTE },
+        { key: 'formatRules', box: '#lorerev_rules', warn: '#lorerev_rules_warn', mark: '#lorerev_rules_edited', reset: '#lorerev_rules_reset', def: DEFAULT_FORMAT_RULES, check: checkFormatRules, note: FORMAT_RULES_NOTE },
+    ];
+    const refreshRulesBox = () => markEdited($root.find('#lorerev_rules_box_edited'), ruleSets.some(r => !!settings[r.key]));
+    for (const r of ruleSets) {
+        const $box = $root.find(r.box).val(settings[r.key] || r.def);
+        const $warn = $root.find(r.warn);
+        const refresh = () => {
+            const problems = r.check(String($box.val()));
+            if (problems.length) {
+                $warn.text(`Warning: these rules may break reading the reply (${problems.join('; ')}). ${r.note} If the model does not answer in that format, no changes can be shown. Use "Restore default" to go back to the original rules.`).show();
+            } else $warn.hide().text('');
+            markEdited($root.find(r.mark), !!settings[r.key]);
+            refreshRulesBox();
+        };
+        $box.on('input', () => {
+            const v = String($box.val());
+            // Only real edits are stored ('' = the default), so improvements of the default still reach you.
+            settings[r.key] = !v.trim() || v.trim() === r.def.trim() ? '' : v;
+            refresh(); save();
+        });
+        $box.on('change', () => { if (!String($box.val()).trim()) { $box.val(r.def); refresh(); } });
+        $root.find(r.reset).on('click', () => $box.val(r.def).trigger('input'));
+        refresh();
+    }
 
     // --- new entry prompt: own system prompt and reply-format rules (same storage rules as above) ---
     const $cSys = $root.find('#lorerev_create_sys').val(settings.createSystemPrompt);
@@ -672,8 +696,9 @@ export async function openModal() {
         try {
             // build the prompt and check its size (warn only), then send and parse
             const session = await prepareSession({ profile, settings, selection, instruction: text });
-            await runRequest(session, sendSession, abort, checkFormatRules(settings.formatRules || DEFAULT_FORMAT_RULES),
-                `${FORMAT_RULES_NOTE} Sending anyway; if no changes show up, use "Restore default" under "Reply format rules (advanced)".`);
+            const passages = session.replyStyle === 'passages';
+            await runRequest(session, sendSession, abort, checkRulesForStyle(session.replyStyle, passages ? (settings.passageFormatRules || DEFAULT_PASSAGE_RULES) : (settings.formatRules || DEFAULT_FORMAT_RULES)),
+                `${passages ? PASSAGE_RULES_NOTE : FORMAT_RULES_NOTE} Sending anyway; if no changes show up, use "Restore default" under "Reply format rules (advanced)" (${passages ? 'Changed passages only' : 'Full rewrite'}).`);
         } catch (e) {
             console.error('[LoreReviser]', e);
             toastr.error(describeError(e), 'LoreReviser');

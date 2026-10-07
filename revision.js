@@ -4,10 +4,12 @@
 import { splitKeywordsAndRegexes } from '../../../world-info.js';
 import { extractMessageFromData } from '../../../../script.js';
 import { parseRevisionReply, sameAsOriginal } from './parse.js';
+import { contentFromReply } from './passages.js';
+import { normalizeReplyStyle } from './rules.js';
 import { getSettings } from './settings.js';
 import { normalizeIntensity } from './intensity.js';
 import { normalizeChangeType } from './changetype.js';
-import { buildMessages, countTokens, verifyEntriesSent, gatherContext, loadSelectedEntries, resolveContextLimit, resolveReplyTokens } from './prompt.js';
+import { buildMessages, countTokens, verifyEntriesSent, gatherContext, loadSelectedEntries, resolveContextLimit, resolveReplyTokens, PASSAGES_AGAINST_ORIGINAL } from './prompt.js';
 
 /**
  * Review item statuses:
@@ -16,6 +18,9 @@ import { buildMessages, countTokens, verifyEntriesSent, gatherContext, loadSelec
  *  missing    the model did not return it AND the reply shows real damage (cut off, or that part was unreadable JSON),
  *             so we can't say it is unchanged. A cleanly parsed array that simply omits an entry means "no changes".
  *             item.missingNote says which case it is. "Retry missing entries" re-requests just these.
+ *  failed     "Changed passages only": the model's edits for this entry could not all be placed in the text (a "find" that
+ *             is not in the entry, occurs more than once, or overlaps another edit). Nothing is applied; item.placeError
+ *             lists the passages, and the card offers "Retry this entry as a full rewrite" and Regenerate.
  *  loading    a regeneration is running
  *  approved / rejected   the user's decision (Approve writes to the lorebook and archives it, see apply.js;
  *             item.written = what was saved, so Undo can put the original back)
@@ -38,17 +43,30 @@ function normKeys(value, fallback) {
     return [...new Set(list.map(k => k.trim()).filter(Boolean))];
 }
 
-/** Turns a parsed reply element into a complete proposal. Missing fields keep the original values. */
-function toAttempt(el, original, intensity = null, request = '', changeType = null) {
+/**
+ * Turns a parsed reply element into a complete proposal. Missing fields keep the original values.
+ * The text comes from the element's find/replace "edits" when it has them (applied to the original text, all or nothing),
+ * otherwise from a full "content" (Full rewrite, or a model that sent the whole text anyway).
+ * @returns {{attempt: object} | {placeError: {failures: object[], total: number, note: string, style: string}}}
+ */
+function buildAttempt(el, original, { intensity = null, request = '', changeType = null, style = 'full' } = {}) {
+    const note = typeof el.note === 'string' ? el.note.trim() : '';
+    const res = contentFromReply(el, original.content);
+    if (res.failures.length) return { placeError: { failures: res.failures, total: res.total, note, style } };
     return {
-        keys: normKeys(el.keys, original.keys),
-        secondary: normKeys(el.secondary_keys, original.secondary),
-        content: typeof el.content === 'string' ? el.content : original.content,
-        note: typeof el.note === 'string' ? el.note.trim() : '',
-        edited: false,
-        intensity,                 // rewrite intensity this attempt was made with
-        changeType,                // change type ('development' | 'retcon') this attempt was made with
-        request,                   // the user's extra request for this regeneration ('' for the first pass)
+        attempt: {
+            keys: normKeys(el.keys, original.keys),
+            secondary: normKeys(el.secondary_keys, original.secondary),
+            content: res.content,
+            note,
+            edited: false,
+            intensity,                 // rewrite intensity this attempt was made with
+            changeType,                // change type ('development' | 'retcon') this attempt was made with
+            request,                   // the user's extra request for this regeneration ('' for the first pass)
+            replyStyle: style,         // reply style the request asked for ('passages' | 'full')
+            source: res.source,        // where the text came from: 'edits' | 'content' | 'none' (text unchanged)
+            editCount: res.source === 'edits' ? res.edits.length : null,
+        },
     };
 }
 
@@ -106,8 +124,11 @@ function applyReply(session, items, parsed) {
         const item = items.find(i => i.id === id);
         if (!item) { session.parse.unknownIds.push(String(el.id)); continue; }
         seen.add(id);
-        const attempt = toAttempt(el, item.original, session.intensity, '', session.changeType);
+        const built = buildAttempt(el, item.original, { intensity: session.intensity, changeType: session.changeType, style: session.replyStyle });
         item.missingNote = null;
+        if (built.placeError) { item.attempts = []; item.index = -1; item.status = 'failed'; item.placeError = built.placeError; continue; }
+        item.placeError = null;
+        const attempt = built.attempt;
         if (sameAsOriginal(item.original, attempt)) { item.status = 'unchanged'; continue; } // returned but identical: no change
         item.attempts = [attempt]; item.index = 0; item.status = 'proposed';
     }
@@ -144,6 +165,12 @@ function readReply(session, info) {
     return parsed;
 }
 
+/** The parts of a request that come from the Send (system prompt, context, instruction and both reply-format rule sets). */
+const promptParts = (session, style = session.replyStyle) => ({
+    systemPrompt: session.systemPrompt, context: session.context, instruction: session.instruction,
+    formatRules: session.formatRules, passageRules: session.passageRules, replyStyle: style,
+});
+
 /**
  * Prepares a revision: loads entries, gathers context, builds the prompt and the token estimate. No request is sent.
  * @returns {Promise<object>} a session; call sendSession() to run it
@@ -153,14 +180,17 @@ export async function prepareSession({ profile, settings, selection, instruction
     if (!items.length) throw new Error('None of the selected entries could be loaded (were they deleted?).');
     const ctxInfo = resolveContextLimit(profile, settings);
     const context = await gatherContext(settings.depth, items, ctxInfo);
-    const maxTokens = await resolveReplyTokens(settings, items);
+    const replyStyle = normalizeReplyStyle(settings.replyStyle);
+    const intensity = normalizeIntensity(settings.intensity);
+    const maxTokens = await resolveReplyTokens(settings, items, replyStyle, intensity);
     const session = {
         id: Date.now(), instruction, profile: { id: profile.id, name: profile.name },
-        systemPrompt: settings.systemPrompt, intensity: normalizeIntensity(settings.intensity), intensityTexts: { ...settings.intensityTexts }, changeType: normalizeChangeType(settings.changeType), changeTypeTexts: { ...settings.changeTypeTexts }, formatRules: settings.formatRules, context, items, maxTokens, rawReplies: [],
+        systemPrompt: settings.systemPrompt, intensity, intensityTexts: { ...settings.intensityTexts }, changeType: normalizeChangeType(settings.changeType), changeTypeTexts: { ...settings.changeTypeTexts },
+        formatRules: settings.formatRules, passageRules: settings.passageFormatRules, replyStyle, context, items, maxTokens, rawReplies: [],
         status: 'ready', error: null, parse: null, createdAt: new Date(),
     };
-    for (const it of items) Object.assign(it, { attempts: [], index: -1, status: 'unchanged', error: null });
-    const messages = buildMessages({ systemPrompt: session.systemPrompt, context, items, instruction, intensity: session.intensity, intensityTexts: session.intensityTexts, changeType: session.changeType, changeTypeTexts: session.changeTypeTexts, formatRules: session.formatRules });
+    for (const it of items) Object.assign(it, { attempts: [], index: -1, status: 'unchanged', error: null, placeError: null });
+    const messages = buildMessages({ ...promptParts(session), items, intensity: session.intensity, intensityTexts: session.intensityTexts, changeType: session.changeType, changeTypeTexts: session.changeTypeTexts });
     const check = verifyEntriesSent(items, messages);
     const dupes = context.loreRemoved.map(x => x.id);
     console.info(`[LoreReviser] entries requested: ${check.requested.join(',')}; entries in prompt: ${check.sent.join(',')}; already active, sent once (removed from active lore): ${dupes.join(',') || '-'}; still also in active lore: ${check.alsoInLore.join(',') || '-'}`);
@@ -200,7 +230,7 @@ export async function sendSession(session, signal) {
 export async function retryMissing(session, items, signal) {
     if (!items.length) return;
     const profile = ctx().ConnectionManagerRequestService.getProfile(session.profile.id);
-    const messages = buildMessages({ systemPrompt: session.systemPrompt, context: session.context, items, instruction: session.instruction, intensity: session.intensity, intensityTexts: session.intensityTexts, changeType: session.changeType, changeTypeTexts: session.changeTypeTexts, formatRules: session.formatRules });
+    const messages = buildMessages({ ...promptParts(session), items, intensity: session.intensity, intensityTexts: session.intensityTexts, changeType: session.changeType, changeTypeTexts: session.changeTypeTexts });
     const info = await ask(profile, messages, session.maxTokens, signal);
     const parsed = readReply(session, info);
     if (parsed.error) throw new Error(parsed.error);
@@ -210,27 +240,48 @@ export async function retryMissing(session, items, signal) {
 /**
  * Regenerates one entry, swipe-style: the model sees its earlier attempts for the entry plus optional new guidance.
  * Adds an attempt and selects it. Throws on failure (the caller shows the error); the item keeps its old attempts.
+ * The reply style chosen in the modal *now* applies, unless `opts.style` overrides it ("Retry this entry as a full rewrite").
+ * @returns {Promise<{placed: boolean}>} placed=false: the model's passage edits could not be placed; item.placeError says
+ *          why, no attempt was added and the caller decides the status
  */
-export async function regenerateItem(session, item, note, signal) {
+export async function regenerateItem(session, item, note, signal, opts = {}) {
     const profile = ctx().ConnectionManagerRequestService.getProfile(session.profile.id);
-    // The rewrite intensity chosen in the modal *now* applies (the user may want a heavier or lighter take on a retry)
+    // The rewrite intensity, change type and reply style chosen in the modal *now* apply (the user may want a different take on a retry)
     const live = getSettings().settings;
     const intensity = normalizeIntensity(live.intensity);
     const changeType = normalizeChangeType(live.changeType);
+    const style = normalizeReplyStyle(opts.style ?? live.replyStyle);
     const messages = buildMessages({
-        systemPrompt: session.systemPrompt, context: session.context, items: [item], instruction: session.instruction, intensity, intensityTexts: live.intensityTexts, changeType, changeTypeTexts: live.changeTypeTexts, formatRules: session.formatRules,
+        ...promptParts(session, style), items: [item], intensity, intensityTexts: live.intensityTexts, changeType, changeTypeTexts: live.changeTypeTexts,
         attempts: item.attempts.length ? item.attempts : null, regenNote: note,
     });
-    // Without earlier attempts (entry was "no changes"), still pass the guidance through the regeneration path
-    if (!item.attempts.length) messages[1].content = messages[1].content.replace('Reply with the JSON array only.',
-        `<regeneration_request>\nThe first pass found no change for entry ${item.id}. Look at it again${note.trim() ? ` with this extra guidance: ${note.trim()}` : ''}. Reply with a JSON array containing only entry ${item.id}.\n</regeneration_request>`);
-    const info = await ask(profile, messages, session.maxTokens, signal);
+    // After passage edits that could not be placed, say so (most of all when asking for the full text instead)
+    const placeNote = item.placeError
+        ? `Your last reply for entry ${item.id} sent "find" passages that could not be located in the entry's text, so nothing was applied.`
+            + (style === 'full' ? ' This time reply with the complete new text of the entry in "content" (no "edits").' : ' Copy every "find" exactly from the entry\'s text this time.')
+        : '';
+    if (!item.attempts.length) {
+        // Without earlier attempts (entry was "no changes", or its edits could not be placed), still pass the guidance through the regeneration path
+        const first = item.placeError ? placeNote : `The first pass found no change for entry ${item.id}. Look at it again${note.trim() ? ` with this extra guidance: ${note.trim()}` : ''}.`;
+        const extra = item.placeError && note.trim() ? ` The user's extra request (follow it): ${note.trim()}` : '';
+        messages[1].content = messages[1].content.replace('Reply with the JSON array only.',
+            `<regeneration_request>\n${first}${extra} Reply with a JSON array containing only entry ${item.id}.${style === 'passages' ? ` ${PASSAGES_AGAINST_ORIGINAL}` : ''}\n</regeneration_request>`);
+    } else if (placeNote) {
+        messages[1].content = messages[1].content.replace(/\n<\/regeneration_request>$/, ` ${placeNote}\n</regeneration_request>`);
+    }
+    // Budget: never below the Send's; a full rewrite of a passages session gets the full-rewrite estimate
+    const maxTokens = Math.max(session.maxTokens, await resolveReplyTokens(live, [item], style, intensity));
+    const info = await ask(profile, messages, maxTokens, signal);
     session.rawReplies.push(info.text);
     const parsed = parseRevisionReply(info.text);
-    if (parsed.error) throw new Error(`Could not read the model's reply: ${parsed.error}${info.lengthHit ? ` (the model hit the reply limit: ${describeEnd(info, session.maxTokens)})` : ''}`);
+    if (parsed.error) throw new Error(`Could not read the model's reply: ${parsed.error}${info.lengthHit ? ` (the model hit the reply limit: ${describeEnd(info, maxTokens)})` : ''}`);
     const el = parsed.entries.find(e => normId(e.id) === item.id) ?? (parsed.entries.length === 1 ? parsed.entries[0] : null);
-    if (!el) throw new Error(parsed.truncated ? `The reply ended before this entry (${describeEnd(info, session.maxTokens)}). Raise "Reply tokens" and try again.` : 'The model did not return this entry.');
-    item.attempts.push(toAttempt(el, item.original, intensity, String(note ?? '').trim(), changeType));
+    if (!el) throw new Error(parsed.truncated ? `The reply ended before this entry (${describeEnd(info, maxTokens)}). Raise "Reply tokens" and try again.` : 'The model did not return this entry.');
+    const built = buildAttempt(el, item.original, { intensity, request: String(note ?? '').trim(), changeType, style });
+    if (built.placeError) { item.placeError = built.placeError; return { placed: false }; }
+    item.placeError = null;
+    item.attempts.push(built.attempt);
     item.index = item.attempts.length - 1;
     item.status = 'proposed';
+    return { placed: true };
 }

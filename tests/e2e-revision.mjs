@@ -55,6 +55,8 @@ try {
   await page.click('#lorereviser_open');
   await page.waitForSelector('.lorerev_book');
   await page.selectOption('#lorerev_profile', 'prof-fake');
+  // This suite covers the Full rewrite reply style (the original behaviour); e2e-passage.mjs covers "Changed passages only".
+  await page.selectOption('#lorerev_replystyle', 'full');
 
   // ---- helpers ----
   const book = (name) => page.locator(`.lorerev_book[data-book="${name}"]`);
