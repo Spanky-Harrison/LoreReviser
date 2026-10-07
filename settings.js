@@ -4,6 +4,7 @@ import { normalizeDepth } from './depth.js';
 import { DEFAULT_INTENSITY, normalizeIntensity } from './intensity.js';
 import { DEFAULT_CHANGE_TYPE, normalizeChangeType } from './changetype.js';
 import { DEFAULT_CREATE_SYSTEM_PROMPT } from './create-core.js';
+import { DEFAULT_REPLY_STYLE, normalizeReplyStyle } from './rules.js';
 
 export const MODULE_NAME = 'LoreReviser';
 
@@ -47,7 +48,9 @@ const DEFAULT_SETTINGS = {
     profileId: '',                    // Connection Manager profile id ('' = none chosen)
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     intensityTexts: {},               // edited wordings per intensity level; a missing/blank level uses the default (see intensity.js)
-    formatRules: '',                  // edited reply-format rules; '' = the default (see rules.js)
+    formatRules: '',                  // edited Full rewrite reply-format rules; '' = the default (see rules.js)
+    passageFormatRules: '',           // edited "Changed passages only" reply-format rules; '' = the default (see rules.js)
+    replyStyle: DEFAULT_REPLY_STYLE,  // how the model answers for existing entries: 'passages' (find/replace edits) | 'full'
     changeTypeTexts: {},              // edited wordings per change type (see changetype.js)
     changeType: DEFAULT_CHANGE_TYPE,  // 'development' | 'retcon'
     intensity: DEFAULT_INTENSITY,     // rewrite intensity: 'light' | 'balanced' | 'heavy'
@@ -69,6 +72,8 @@ export function getSettings() {
     if (!settings.intensityTexts || typeof settings.intensityTexts !== 'object' || Array.isArray(settings.intensityTexts)) settings.intensityTexts = {};
     if (!settings.archiveIndex || typeof settings.archiveIndex !== 'object' || Array.isArray(settings.archiveIndex)) settings.archiveIndex = {};
     if (typeof settings.formatRules !== 'string') settings.formatRules = '';
+    if (typeof settings.passageFormatRules !== 'string') settings.passageFormatRules = '';
+    settings.replyStyle = normalizeReplyStyle(settings.replyStyle);
     if (typeof settings.createFormatRules !== 'string') settings.createFormatRules = '';
     if (typeof settings.createSystemPrompt !== 'string' || !settings.createSystemPrompt.trim()) settings.createSystemPrompt = DEFAULT_CREATE_SYSTEM_PROMPT;
     if (typeof settings.createBook !== 'string') settings.createBook = '';

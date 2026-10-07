@@ -16,6 +16,7 @@ import { proposalWarnings, proposalLabel } from './create-core.js';
 import { INTENSITIES } from './intensity.js';
 import { CHANGE_TYPES } from './changetype.js';
 import { regenerateItem, retryMissing, describeEnd, describeError, runState } from './revision.js';
+import { failureReason } from './passages.js';
 
 const currentAttempt = (item) => item.attempts[item.index];
 
@@ -43,7 +44,9 @@ export function renderSession(session, hooks = {}) {
             return;
         }
         const parts = [`${session.items.length} sent`, `${count('proposed') + count('approved') + count('rejected')} changed`, `${count('unchanged')} no changes`];
+        if (count('failed')) parts.push(`${count('failed')} couldn't be applied`);
         if (count('missing')) parts.push(`${count('missing')} not returned`);
+        if (session.replyStyle === 'passages') parts.push('changed passages only');
         if (count('approved')) parts.push(`${count('approved')} approved`);
         if (count('rejected')) parts.push(`${count('rejected')} rejected`);
         $head.empty().append($el('b', '', `Revision`), $el('span', 'lorerev_dim', ` · ${session.profile.name} · ${parts.join(' · ')}`));
@@ -127,7 +130,7 @@ export function renderSession(session, hooks = {}) {
             $el('b', '', item.title), $el('span', 'lorerev_dim', created ? ` ${item.book} · new entry${item.uid !== null && item.uid !== undefined ? ` #${item.uid}` : ''}` : ` ${item.book} · ${item.id}`),
             created ? $el('span', 'lorerev_pill lorerev_pill_new', 'New entry') : '',
             $el('span', `lorerev_pill lorerev_pill_${item.status}`, ({
-                proposed: 'Proposed', unchanged: 'No changes', missing: 'Not returned', loading: 'Regenerating…', approved: 'Approved', rejected: 'Rejected',
+                proposed: 'Proposed', unchanged: 'No changes', missing: 'Not returned', failed: "Couldn't apply", loading: 'Regenerating…', approved: 'Approved', rejected: 'Rejected',
             })[item.status]));
         $card.append(title);
         if (canCollapse) title.on('click', () => { ui.collapsed = !ui.collapsed; rerender(item); });
@@ -143,6 +146,12 @@ export function renderSession(session, hooks = {}) {
         if (item.status === 'loading') {
             $card.append($el('div', 'lorerev_dim', 'Waiting for the model…'),
                 $el('div', 'menu_button', 'Cancel').on('click', () => item.abort?.abort()));
+            return $card;
+        }
+        if (item.status === 'failed') {
+            // "Changed passages only": the model's edits could not be placed. Nothing was applied; say which passages, and offer a full rewrite.
+            $card.append(placeErrorBox(item));
+            $card.append(ui.editing ? editForm(item, null) : $('<div>').append(buttonsRow(item, ['edit', 'history']), regenBox(item)));
             return $card;
         }
         if (item.status === 'unchanged' || item.status === 'missing') {
@@ -173,11 +182,13 @@ export function renderSession(session, hooks = {}) {
                 ? 'You edited this after approving it. Approve it again to save your edited version. Until then the lorebook keeps the version you approved before (Reject puts the original back).'
                 : 'You edited this after approving it. Approve it again to confirm your edited version.'));
         }
+        if (item.placeError && ['proposed', 'rejected'].includes(item.status)) $card.append(placeErrorBox(item)); // the latest regeneration's edits did not fit; earlier attempts stay
         if (attempt.note) $card.append($el('div', 'lorerev_note', attempt.note));
         if (attempt.request || attempt.intensity || attempt.changeType) {
             $card.append($el('div', 'lorerev_dim lorerev_attempt_info').append(
                 attempt.intensity ? $el('span', '', `Rewrite intensity: ${INTENSITIES[attempt.intensity]?.label ?? attempt.intensity}. `) : '',
                 attempt.changeType ? $el('span', '', `Change type: ${CHANGE_TYPES[attempt.changeType]?.label ?? attempt.changeType}. `) : '',
+                attempt.replyStyle ? $el('span', 'lorerev_style_info', `${replyStyleInfo(attempt)} `) : '',
                 attempt.request ? $el('span', 'lorerev_request', `Your request for this attempt: “${attempt.request}”`) : ''));
         }
         for (const w of created ? proposalWarnings(attempt, session.existing ?? []) : integrityWarnings(item.original, attempt)) $card.append($el('div', 'lorerev_warn', w));
@@ -196,6 +207,40 @@ export function renderSession(session, hooks = {}) {
         return $card;
     }
 
+    /** "Reply: 2 changed passages." / "Reply: full rewrite." for the attempt info line. */
+    function replyStyleInfo(a) {
+        if (a.replyStyle === 'passages' && a.source === 'edits') return `Reply: ${a.editCount} changed passage${a.editCount === 1 ? '' : 's'}, put into the full text.`;
+        if (a.replyStyle === 'passages' && a.source === 'content') return 'Reply: the model sent the whole text instead of passages.';
+        if (a.replyStyle === 'passages') return 'Reply: keys only.';
+        return 'Reply: full rewrite.';
+    }
+
+    /**
+     * The red box for passage edits that could not be placed: which passages, why, and the way out
+     * ("Retry this entry as a full rewrite"; Regenerate and Edit are on the card as usual).
+     */
+    function placeErrorBox(item) {
+        const pe = item.placeError;
+        const n = pe.failures.length, total = pe.total || n;
+        const $box = $el('div', 'lorerev_place_error');
+        $box.append($el('div', 'lorerev_place_error_head', item.status === 'failed'
+            ? `The model's changes could not be applied: ${n} of its ${total} passage edit${total === 1 ? '' : 's'} could not be placed in the entry, so nothing was changed (no partial edits).`
+            : `The last regeneration could not be applied: ${n} of its ${total} passage edit${total === 1 ? '' : 's'} could not be placed in the entry, so no new attempt was added. The attempts below are unchanged.`));
+        const $list = $el('ul', 'lorerev_place_list');
+        for (const f of pe.failures) {
+            $list.append($el('li', '').append(
+                $el('span', 'lorerev_dim', `Edit ${f.index + 1}${f.kind === 'after' ? ' (insert after)' : f.kind === 'before' ? ' (insert before)' : ''}: `),
+                $el('q', 'lorerev_place_passage', String(f.anchor ?? '').length > 300 ? `${String(f.anchor).slice(0, 300)}…` : String(f.anchor ?? '')),
+                $el('span', 'lorerev_place_reason', ` – ${failureReason(f)}`)));
+        }
+        $box.append($list);
+        if (pe.note) $box.append($el('div', 'lorerev_dim', `The model's note: ${pe.note}`));
+        $box.append($el('div', 'lorerev_dim', 'Retry it as a full rewrite (one request for this entry that asks for the whole text), Regenerate to ask for passage edits again, or write the change yourself with Edit. The model\'s reply is under "Raw reply".'));
+        $box.append($el('div', 'lorerev_buttons').append(
+            $el('div', 'menu_button lorerev_btn_fullretry', 'Retry this entry as a full rewrite').attr('title', 'Ask the model again for just this entry, this time for its complete new text (uses the Full rewrite reply rules)').on('click', () => regen(item, { style: 'full' }))));
+        return $box;
+    }
+
     function viewToggle(item) {
         const views = $el('div', 'lorerev_views');
         for (const [v, label] of [['changes', 'Changes'], ['compare', 'Full Compare'], ['new', 'New'], ['old', 'Old']]) {
@@ -207,7 +252,7 @@ export function renderSession(session, hooks = {}) {
     /** After a saved edit: back to "Proposed" (an approved card needs approving again). */
     function afterEdit(item) {
         if (item.status === 'approved') item.reapprove = true;
-        item.status = 'proposed'; item.applyMessage = null; item.notice = null; item.ui.editing = false; item.ui.draft = null; rerender(item);
+        item.status = 'proposed'; item.applyMessage = null; item.notice = null; item.placeError = null; item.ui.editing = false; item.ui.draft = null; rerender(item);
     }
 
     /**
@@ -220,7 +265,7 @@ export function renderSession(session, hooks = {}) {
         const sameAs = (a, b) => sameAsOriginal(a, b) && (!created || (a.title ?? '') === (b.title ?? ''));
         if (!attempt) {
             if (sameAsOriginal(item.original, v)) { toastr.info('Nothing was changed.', 'LoreReviser'); item.ui.editing = false; item.ui.draft = null; return rerender(item); }
-            item.attempts.push({ ...v, note: 'Written by you: the model had left this entry unchanged.', edited: true, manual: true });
+            item.attempts.push({ ...v, note: item.status === 'failed' ? 'Written by you: the model\'s changes could not be applied.' : 'Written by you: the model had left this entry unchanged.', edited: true, manual: true });
             item.index = item.attempts.length - 1;
         } else {
             // remember what the model wrote so the edit can be undone
@@ -396,16 +441,22 @@ export function renderSession(session, hooks = {}) {
         return $el('div', 'lorerev_regen').append(note, go);
     }
 
-    /** Runs a regeneration for one entry (one request at a time). */
-    async function regen(item) {
+    /**
+     * Runs a regeneration for one entry (one request at a time). opts.style = 'full' is "Retry this entry as a full rewrite".
+     * If the reply's passage edits can't be placed, no attempt is added: the card keeps its attempts (or shows "Couldn't apply").
+     */
+    async function regen(item, opts = {}) {
         if (runState.busy) { toastr.warning('Another request is still running.', 'LoreReviser'); return; }
         const note = item.ui.regenText;
         const before = item.status;
         runState.busy = true; item.abort = new AbortController();
         item.status = 'loading'; item.error = null; rerender(item);
         try {
-            await (item.kind === 'create' ? regenerateCreateItem : regenerateItem)(session, item, note, item.abort.signal);
-            item.ui.regenText = ''; // consumed: it now lives on the new attempt
+            const res = await (item.kind === 'create' ? regenerateCreateItem : regenerateItem)(session, item, note, item.abort.signal, opts);
+            if (res && res.placed === false) {
+                item.status = item.attempts.length ? before : 'failed'; // earlier attempts stay as they were
+                toastr.warning('The model\'s passage edits could not be placed in the entry, so nothing was applied. See the card.', 'LoreReviser', { timeOut: 8000 });
+            } else item.ui.regenText = ''; // consumed: it now lives on the new attempt
         } catch (e) {
             item.status = before;
             item.error = item.abort.signal.aborted ? 'Regeneration cancelled.' : `Regeneration failed: ${describeError(e)}`;

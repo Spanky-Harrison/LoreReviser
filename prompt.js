@@ -2,19 +2,20 @@
 //
 // The request is two chat messages:
 //   system: the user's system prompt + the rewrite-intensity section + the change-type section + the reply-format rules (rules.js), all editable in the modal
+//           (the rules depend on the reply style: "Changed passages only" find/replace edits, or "Full rewrite")
 //   user:   <character_card> <active_lore> <chat_history> <entries_to_revise> <instructions>
 // Regeneration adds <previous_attempts> and <regeneration_request> and lists only the entry being redone.
 
 import { loadWorldInfo, getWorldInfoPrompt } from '../../../world-info.js';
 import * as worldInfo from '../../../world-info.js';
 import * as stScript from '../../../../script.js';
-import { wiBudget, wiScanContext } from './budget.js';
+import { wiBudget, wiScanContext, autoReplyTokens } from './budget.js';
 import * as regexEngine from '../../regex/engine.js';
 import { normalizeDepth, sliceByDepth } from './depth.js';
 import { dedupeLore, assembleLore } from './dedupe.js';
 import { intensitySection } from './intensity.js';
 import { changeTypeSection } from './changetype.js';
-import { effectiveFormatRules } from './rules.js';
+import { rulesForStyle, normalizeReplyStyle } from './rules.js';
 
 
 /** Short ids for the entries in one request: E1, E2, ... They map back to (book, uid) in the session. */
@@ -211,6 +212,9 @@ ${o.content}
 </entry>`;
 }
 
+/** Said on every passages-style regeneration: the edits are applied to the entry's text, never to an earlier attempt. */
+export const PASSAGES_AGAINST_ORIGINAL = 'Your edits are applied to the entry\'s text as given in <entries_to_revise>, not to a previous attempt: copy every "find" from that text.';
+
 /** A previous attempt as JSON, in the same shape as a reply element. */
 const attemptJson = (a) => JSON.stringify({ keys: a.keys, secondary_keys: a.secondary, content: a.content });
 
@@ -225,11 +229,14 @@ const attemptJson = (a) => JSON.stringify({ keys: a.keys, secondary_keys: a.seco
  * @param {string} [p.changeType] 'development' | 'retcon' (see changetype.js)
  * @param {Record<string,string>} [p.changeTypeTexts] the user's edited wordings per change type (missing = default)
  * @param {Record<string,string>} [p.intensityTexts] the user's edited wordings per level (missing = default)
- * @param {string} [p.formatRules] the user's edited reply-format rules ('' = default)
+ * @param {string} [p.formatRules] the user's edited Full rewrite reply-format rules ('' = default)
+ * @param {string} [p.passageRules] the user's edited Changed passages reply-format rules ('' = default)
+ * @param {string} [p.replyStyle] 'passages' (find/replace edits) | 'full' (whole text), see rules.js
  * @param {object[]} [p.attempts] regeneration only: earlier attempts of the single entry
  * @param {string} [p.regenNote] regeneration only: extra guidance
  */
-export function buildMessages({ systemPrompt, context, items, instruction, intensity, intensityTexts = {}, changeType, changeTypeTexts = {}, formatRules = '', attempts = null, regenNote = '' }) {
+export function buildMessages({ systemPrompt, context, items, instruction, intensity, intensityTexts = {}, changeType, changeTypeTexts = {}, formatRules = '', passageRules = '', replyStyle = 'full', attempts = null, regenNote = '' }) {
+    const style = normalizeReplyStyle(replyStyle);
     const sections = [
         `<character_card>\n${context.card}\n</character_card>`,
         `<active_lore>\n${loreFor(context, items).lore || '(none active)'}\n</active_lore>`,
@@ -244,12 +251,13 @@ export function buildMessages({ systemPrompt, context, items, instruction, inten
         sections.push(`<previous_attempts entry="${id}">\n${attempts.map((a, i) =>
             `<attempt n="${i + 1}"${a.edited ? ' edited_by_user="true"' : ''}${a.request ? ` user_request=${JSON.stringify(a.request)}` : ''}>${attemptJson(a)}</attempt>`).join('\n')}\n</previous_attempts>`);
         sections.push(`<regeneration_request>\nThe user wants a new version of entry ${id}. Write a different, better version than the previous attempts.`
-            + `${regenNote.trim() ? ` The user's extra request for this regeneration (follow it): ${regenNote.trim()}` : ''} Reply with a JSON array containing only entry ${id}.\n</regeneration_request>`);
+            + `${regenNote.trim() ? ` The user's extra request for this regeneration (follow it): ${regenNote.trim()}` : ''} Reply with a JSON array containing only entry ${id}.`
+            + `${style === 'passages' ? ` ${PASSAGES_AGAINST_ORIGINAL}` : ''}\n</regeneration_request>`);
     } else {
         sections.push('Reply with the JSON array only.');
     }
     return [
-        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity, intensityTexts)}\n\n${changeTypeSection(changeType, changeTypeTexts)}\n\n${effectiveFormatRules(formatRules)}` },
+        { role: 'system', content: `${systemPrompt.trim()}\n\n${intensitySection(intensity, intensityTexts)}\n\n${changeTypeSection(changeType, changeTypeTexts)}\n\n${rulesForStyle(style, { formatRules, passageRules })}` },
         { role: 'user', content: sections.join('\n\n') },
     ];
 }
@@ -288,15 +296,13 @@ export function resolveContextLimit(profile, settings) {
     return { limit: isCC && cc.openai_max_context > 0 ? Number(cc.openai_max_context) : ctx.maxContext, source: 'your main connection', response };
 }
 
-/** Reply budget: the user's setting, or an estimate from the size of the entries being revised. */
-export async function resolveReplyTokens(settings, items) {
+/** Reply budget: the user's setting, or an estimate from the size of the entries being revised and the reply style. */
+export async function resolveReplyTokens(settings, items, style = 'full', intensity = null) {
     if (settings.replyTokens > 0) return settings.replyTokens;
     const { getTokenCountAsync } = SillyTavern.getContext();
     const text = items.map(i => i.original.content + JSON.stringify(i.original.keys) + JSON.stringify(i.original.secondary)).join('\n');
     const entryTokens = await getTokenCountAsync(text);
-    // Generous on purpose: the reply has to hold every changed entry in full (JSON-escaped), and "thinking" models spend
-    // part of this budget before they write the answer. Unused budget costs nothing.
-    return Math.min(32000, Math.max(4096, Math.ceil(entryTokens * 2) + 2500));
+    return autoReplyTokens(entryTokens, style, intensity);
 }
 
 /**
