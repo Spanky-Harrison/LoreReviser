@@ -57,10 +57,11 @@ const version = (v) => ({ keys: [...(v?.keys ?? [])], secondary: [...(v?.seconda
 /**
  * One archive record.
  * @param {object} p
- * @param {'approve'|'undo'|'restore'|'create'|'remove'|'recreate'} p.action  approve = an approved revision was saved; undo = Undo on an
+ * @param {'approve'|'undo'|'restore'|'create'|'remove'|'recreate'|'manual'} p.action  approve = an approved revision was saved; undo = Undo on an
  *        approved card put the old version back; restore = a version was put back from History; create = an approved new
  *        entry was created (old side empty); remove = a created entry was removed again (Undo on its card, or from History;
- *        new side empty, `snapshot` holds the whole entry); recreate = a removed entry was created again from History
+ *        new side empty, `snapshot` holds the whole entry); recreate = a removed entry was created again from History;
+ *        manual = the entry was edited by hand in LoreReviser's entry editor (no model involved)
  * @param {object} [p.extra] more fields for the record (e.g. settingsFrom, snapshot, via); undefined/null values are skipped
  * @param {number} p.uid entry uid
  * @param {string} p.title entry title (comment) or label
@@ -123,8 +124,24 @@ export function actionLabel(action) {
     return ({
         approve: 'Approved change', undo: 'Undone (old version put back)', restore: 'Restored from History',
         create: 'New entry created', remove: 'Entry removed (creation undone)', recreate: 'Entry created again',
+        manual: 'Manual edit',
     })[action] ?? String(action);
 }
+
+/** The order of the History "Kind" filter (actions not listed here come last, in the order they appear). */
+const ACTION_ORDER = ['approve', 'manual', 'restore', 'undo', 'create', 'remove', 'recreate'];
+
+/** History "Kind" filter choices: the actions that occur in the archive, as [{action, label, count}]. */
+export function actionKinds(archive) {
+    const counts = new Map();
+    for (const r of archive?.records ?? []) counts.set(r.action, (counts.get(r.action) ?? 0) + 1);
+    const rank = (a) => { const i = ACTION_ORDER.indexOf(a); return i < 0 ? ACTION_ORDER.length : i; };
+    return [...counts].map(([action, count], i) => ({ action, label: actionLabel(action), count, i }))
+        .sort((a, b) => rank(a.action) - rank(b.action) || a.i - b.i).map(({ action, label, count }) => ({ action, label, count }));
+}
+
+/** Records of one kind (action), or all when `action` is empty/null. Keeps the given order. */
+export const filterByAction = (records, action) => (action ? (records ?? []).filter(r => r.action === action) : [...(records ?? [])]);
 
 /** The record's Old side is "no entry" (it created the entry). Restoring it means removing the entry. */
 export const createdByRecord = (r) => r?.action === 'create' || r?.action === 'recreate';

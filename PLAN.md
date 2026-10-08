@@ -66,6 +66,14 @@ Asked for after the milestones: for existing entries the model can now send only
 - **Budget:** automatic reply tokens for Changed passages are about 1.25x the entries + 2500 (Full rewrite: 2x + 2500), same 4096 floor and 32000 cap; Heavy-handed keeps the full-rewrite estimate; a full-rewrite retry gets the full-rewrite estimate. A "Reply tokens" value always wins.
 - Still to do: try it with a real model; if models misquote often, the tolerant match may need more cases (e.g. case differences, which are deliberately not matched now).
 
+## Direct entry editor (done)
+Asked for after the milestones: read and edit an entry's text without running a model. A pencil icon at the end of each entry row in the modal's sidebar (inside the row's `<label>`, so its click handler calls `preventDefault` + `stopPropagation` and never toggles the checkbox) opens `entry-editor.js`.
+- **UI:** a nested ST `Popup` (wide + large, own class `lorerev_entry_popup` sized like the modal), not an in-modal panel, so the chat/cards stay as they were underneath. Title (read-only), "Entry #N in <book>", Keys and Secondary keys as comma-separated boxes (split with ST's `splitKeywordsAndRegexes`), and the content in a textarea that fills the popup. Opens straight into edit mode. Popup buttons Save / Cancel; "History for this entry" and "Reload from lorebook" above the boxes.
+- **Decisions:** title and entry settings are not editable here (writes stay key / keysecondary / content only, like Approve). A key box is only re-split when its text was changed, so an untouched box keeps the exact key list (regex keys with commas, odd spacing). Save closes the editor; Save with no real change writes nothing and closes. Cancel / Esc with unsaved changes asks (Discard / Keep editing) via the popup's `onClosing`.
+- **Write path:** `apply.js` `saveManualEdit` in the same serial write queue: fresh `loadWorldInfo`, stale check against the version the editor was opened (or reloaded) with, `saveVersion` (`setWIOriginalDataValue`, `saveWorldInfo(..., true)`, `reloadWorldInfoEditor`), then a History record with action `manual` ("Manual edit", plus `changed`: content / keys / secondary). A stale save refuses with a message; "Reload from lorebook" loads the current version and keeps what was typed in a read-only box below to copy from.
+- **History:** `manual` records restore like approvals (generic Restore path). The History window got a **Kind** filter (actions present, with counts) next to the entry filter, and a purple "Manual edit" pill with an info line. Restoring from the editor's History reloads the editor if nothing was typed, otherwise it says the next save would be refused.
+- Pure logic in `manual-core.js` (unit-tested); `tests/e2e-direct-edit.mjs` covers the flow.
+
 ## Open questions
 - None currently.
 

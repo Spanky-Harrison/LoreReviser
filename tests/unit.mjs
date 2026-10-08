@@ -10,7 +10,8 @@ import { DEFAULT_FORMAT_RULES, checkFormatRules, effectiveFormatRules, FORMAT_RU
 import { readEdits, applyEdits, locate, normalizeWithMap, contentFromReply, failureReason } from '../passages.js';
 import { DEFAULT_SYSTEM_PROMPT, getSettings, LEGACY_DEFAULT_PROMPTS, LEGACY_CREATE_PROMPTS } from '../settings.js';
 import { blockDiff, splitBlocks, listDiff, sentenceSpans, proposalHunks, applyHunkEdits } from '../diff.js';
-import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear, removeRecords } from '../archive-core.js';
+import { slugify, shortHash, archiveFileName, isValidFileName, ARCHIVE_PREFIX, newArchive, normalizeArchive, makeRecord, recordsFor, latestRecord, sameVersion, findOrphans, relinkIndex, actionLabel, createdByRecord, removedByRecord, uidsInArchive, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear, removeRecords, actionKinds, filterByAction } from '../archive-core.js';
+import { keysText, formFromVersion, formDirty, buildManualVersion, describeChanged, textStats } from '../manual-core.js';
 import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, effectiveCreateRules, effectiveCreatePrompt, proposalId, NOT_COPIED, settingsFrom, freeUid, nextDisplayIndex, toProposal, proposalLabel, proposalWarnings, entryMatches, buildCreateMessages } from '../create-core.js';
 
 let n = 0;
@@ -645,6 +646,56 @@ t('rules: reply styles, separate defaults, checks and effective rules', () => {
 t('budget: automatic reply tokens are smaller for changed passages (except heavy-handed), same floor and cap', () => {
     assert.equal(autoReplyTokens(3000, 'full'), 8500); assert.equal(autoReplyTokens(3000, 'passages'), 6250);
     assert.equal(autoReplyTokens(3000, 'passages', 'heavy'), 8500); assert.equal(autoReplyTokens(10, 'passages'), 4096); assert.equal(autoReplyTokens(100000, 'full'), 32000);
+});
+
+// ---------- direct entry editor (manual-core.js) and the "Manual edit" History kind ----------
+const splitKeys = (t) => String(t).split(',').map(x => x.trim()).filter(Boolean);
+t('manual edit: form strings from a version, dirty check', () => {
+    const v = { keys: ['Maren', 'queen'], secondary: [], content: 'Line 1\nLine 2' };
+    const f = formFromVersion(v);
+    assert.deepEqual(f, { keys: 'Maren, queen', secondary: '', content: 'Line 1\nLine 2' });
+    assert.equal(keysText(undefined), ''); assert.deepEqual(formFromVersion(null), { keys: '', secondary: '', content: '' });
+    assert.equal(formDirty(f, { ...f }), false);
+    assert.equal(formDirty(f, { ...f, content: 'x' }), true); assert.equal(formDirty(f, { ...f, keys: 'Maren' }), true); assert.equal(formDirty(f, { ...f, secondary: 'a' }), true);
+    assert.equal(formDirty(null, f), false);
+});
+t('manual edit: keys are only replaced when their box was edited (display never rewrites them)', () => {
+    // a key with a comma inside a regex, or odd spacing, must survive an untouched key box exactly
+    const orig = { keys: ['/a,b/i', ' spaced '], secondary: ['x'], content: 'old' };
+    const init = formFromVersion(orig);
+    const r = buildManualVersion(orig, init, { ...init, content: 'new text' }, splitKeys);
+    assert.deepEqual(r.version, { keys: ['/a,b/i', ' spaced '], secondary: ['x'], content: 'new text' });
+    assert.deepEqual(r.changed, ['content']);
+    assert.notEqual(r.version.keys, orig.keys); // a copy
+    const r2 = buildManualVersion(orig, init, { ...init, keys: 'one, two', secondary: '' }, splitKeys);
+    assert.deepEqual(r2.version, { keys: ['one', 'two'], secondary: [], content: 'old' });
+    assert.deepEqual(r2.changed, ['keys', 'secondary']);
+});
+t('manual edit: no change, or a key box edited back to the same keys, changes nothing', () => {
+    const orig = { keys: ['a', 'b'], secondary: [], content: 'same' };
+    const init = formFromVersion(orig);
+    assert.deepEqual(buildManualVersion(orig, init, { ...init }, splitKeys).changed, []);
+    assert.deepEqual(buildManualVersion(orig, init, { ...init, keys: 'a,b' }, splitKeys).changed, []); // other spacing, same keys
+    assert.deepEqual(buildManualVersion(orig, init, { ...init, content: 'same ' }, splitKeys).changed, ['content']); // whitespace counts in the text
+    assert.deepEqual(buildManualVersion({ keys: [], secondary: [] }, formFromVersion({}), { keys: '', secondary: '', content: '' }, splitKeys).changed, []);
+});
+t('manual edit: plain words for what changed, text stats', () => {
+    assert.equal(describeChanged(['content']), 'text'); assert.equal(describeChanged(['content', 'keys']), 'text and keys');
+    assert.equal(describeChanged(['content', 'keys', 'secondary']), 'text, keys and secondary keys'); assert.equal(describeChanged([]), 'nothing'); assert.equal(describeChanged(undefined), 'nothing');
+    assert.equal(textStats(''), '0 characters · 0 words'); assert.equal(textStats('a'), '1 character · 1 word'); assert.equal(textStats('  two words\n'), '12 characters · 2 words');
+});
+t('History: "Manual edit" label, record and kind filter', () => {
+    assert.equal(actionLabel('manual'), 'Manual edit');
+    const rec = makeRecord({ action: 'manual', uid: 3, title: 'T', before: { keys: ['a'], secondary: [], content: 'x' }, after: { keys: ['a'], secondary: [], content: 'y' }, extra: { changed: ['content'] } });
+    assert.equal(rec.action, 'manual'); assert.deepEqual(rec.changed, ['content']); assert.equal(rec.old.content, 'x'); assert.equal(rec.new.content, 'y');
+    assert.equal(createdByRecord(rec), false); assert.equal(removedByRecord(rec), false); // restored like an approved change
+    const a = { records: [{ id: '1', action: 'restore' }, { id: '2', action: 'manual' }, { id: '3', action: 'approve' }, { id: '4', action: 'manual' }, { id: '5', action: 'odd' }] };
+    assert.deepEqual(actionKinds(a), [{ action: 'approve', label: 'Approved change', count: 1 }, { action: 'manual', label: 'Manual edit', count: 2 },
+        { action: 'restore', label: 'Restored from History', count: 1 }, { action: 'odd', label: 'odd', count: 1 }]);
+    assert.deepEqual(actionKinds(null), []);
+    assert.deepEqual(filterByAction(a.records, 'manual').map(r => r.id), ['2', '4']);
+    assert.deepEqual(filterByAction(a.records, '').map(r => r.id), ['1', '2', '3', '4', '5']); assert.notEqual(filterByAction(a.records, ''), a.records);
+    assert.deepEqual(filterByAction(undefined, 'manual'), []);
 });
 
 console.log(`${n} unit tests passed`);

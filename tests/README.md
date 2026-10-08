@@ -20,6 +20,8 @@ SHOTS_DIR=/tmp/shots node tests/e2e-archive.mjs   # saving, History/Restore, sta
 SHOTS_DIR=/tmp/shots node tests/e2e-create.mjs    # new entries: mode switch, request, cards, Approve creates (copied settings / defaults), edit, Undo/Reject remove, regenerate, History remove / create again, safety checks
 # and once more on a fresh instance:
 SHOTS_DIR=/tmp/shots node tests/e2e-passage.mjs   # "Changed passages only" reply style: request, diff, Approve saves the built text, tolerant match, "Couldn't apply" + Retry as a full rewrite, setting, rule sets
+# and once more on a fresh instance:
+SHOTS_DIR=/tmp/shots node tests/e2e-direct-edit.mjs  # entry editor (sidebar pencil): opens without a model request, checkboxes untouched, Save writes text/keys + Manual edit History record, Cancel/Discard write nothing, stale check + Reload, History Kind filter + Restore, revision afterwards
 ```
 
 `e2e-revision.mjs` switches the Reply style to Full rewrite at the start (it covers the original full-text replies); the other suites run with the default (Changed passages only) and use full-text replies, which that style also accepts.
