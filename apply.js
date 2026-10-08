@@ -4,6 +4,8 @@
 // silently), set key / keysecondary / content only, save immediately, reload the World Info editor, archive a record.
 // Writes run one at a time (a second approval waits for the first), so two quick approvals can't overwrite each other.
 // Clearing History (removing records, deleting an orphaned History file) runs in the same queue; it never touches a lorebook.
+// The direct entry editor (entry-editor.js: open an entry from the sidebar, edit it by hand, no model) saves through
+// saveManualEdit here, with the same stale check, write and History record ("manual").
 
 import { setWIOriginalDataValue, createWorldInfoEntry, deleteWIOriginalDataValue } from '../../../world-info.js';
 import { appendRecord, readArchive, removeArchiveRecords, deleteArchiveFile } from './archive.js';
@@ -158,6 +160,54 @@ export function restoreRecord(book, record, expected) {
         } catch (e) {
             console.error('[LoreReviser] restore failed', e);
             return { written: false, message: `Not restored: ${e?.message ?? e}` };
+        }
+    });
+}
+
+// ======================= direct entry editor (no model) =======================
+
+/**
+ * Reads an entry for the direct editor (a fresh copy, like every write). Returns
+ * {title, comment, uid, disabled, version: {keys, secondary, content}} or {error}.
+ */
+export async function readEntryForEdit(book, uid) {
+    try {
+        const { entry, error } = await loadEntry(book, uid);
+        if (error) return { error };
+        return { uid: Number(uid), title: titleOf(entry, uid), comment: entry.comment ?? '', disabled: !!entry.disable, version: versionOf(entry) };
+    } catch (e) { return { error: String(e?.message ?? e) }; }
+}
+
+/**
+ * Save in the direct editor: writes keys / secondary keys / text into the entry, if it still holds exactly `expected`
+ * (what the editor was opened or reloaded with). Archived as a "manual" record (restorable like every other record).
+ * @param {string} book
+ * @param {number} uid
+ * @param {{keys: string[], secondary: string[], content: string}} expected
+ * @param {{keys: string[], secondary: string[], content: string}} after
+ * @param {{changed?: string[]}} [meta] which parts were edited ('content', 'keys', 'secondary'), stored on the record
+ * @returns {Promise<{written: boolean, stale?: boolean, unchanged?: boolean, gone?: boolean, message: string}>}
+ */
+export function saveManualEdit(book, uid, expected, after, meta = {}) {
+    return serial(async () => {
+        try {
+            const { data, entry, error } = await loadEntry(book, uid);
+            if (error) return { written: false, gone: true, message: `Not saved: ${error}.` };
+            const before = versionOf(entry);
+            if (!sameVersion(before, expected)) {
+                return { written: false, stale: true, message: 'Not saved: this entry was changed in the lorebook after you opened it here (for example in the World Info editor, by an approval or a restore). Saving now would overwrite that change. Press "Reload from lorebook" to load its current text; what you typed stays below so you can copy it back in.' };
+            }
+            if (sameVersion(before, after)) return { written: false, unchanged: true, message: 'Nothing to save: the keys and text are the same as in the lorebook.' };
+            const v = copy(after);
+            await saveVersion(book, data, uid, v);
+            const extra = await archive(book, makeRecord({
+                action: 'manual', uid, title: titleOf(entry, uid), before, after: v,
+                extra: { changed: meta.changed?.length ? [...meta.changed] : null },
+            }));
+            return { written: true, message: `Saved to the lorebook "${book}". The previous version is kept in History (as a Manual edit).${extra}` };
+        } catch (e) {
+            console.error('[LoreReviser] manual edit failed', e);
+            return { written: false, message: `Not saved: ${e?.message ?? e}` };
         }
     });
 }

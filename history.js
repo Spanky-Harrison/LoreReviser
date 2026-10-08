@@ -7,10 +7,11 @@
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { $el, keyChips, contentView } from './views.js';
 import { readArchive, getArchiveIndex } from './archive.js';
-import { recordsFor, actionLabel, createdByRecord, removedByRecord, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear } from './archive-core.js';
+import { recordsFor, actionLabel, actionKinds, filterByAction, createdByRecord, removedByRecord, CLEAR_CHOICES, DEFAULT_CLEAR_CHOICE, clearChoice, recordsToClear } from './archive-core.js';
 import { checkRestore, restoreRecord, clearHistoryRecords } from './apply.js';
 import { INTENSITIES } from './intensity.js';
 import { CHANGE_TYPES } from './changetype.js';
+import { describeChanged } from './manual-core.js';
 
 const changes = (n) => `${n} saved change${n === 1 ? '' : 's'}`;
 const KEEP_NOTE = 'The lorebook itself is not changed: its entries keep their current text and settings. Only these saved versions are removed from History, and once removed they can\'t be restored.';
@@ -33,6 +34,7 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
     // Fold state for this History window: missing = default (newest expanded, older collapsed).
     const folded = new Map();
     let clearSel = DEFAULT_CLEAR_CHOICE; // "Clear old history" choice, kept for this window
+    let kind = ''; // "Kind" filter: '' = every kind of change, else one action (e.g. 'manual')
 
     async function load() {
         $list.empty().append($el('div', 'lorerev_dim', 'Loading…'));
@@ -53,8 +55,16 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
         const $sel = $('<select class="text_pole lorerev_hist_filter">').append($('<option value="">All entries</option>'));
         for (const [u, t] of entries) $sel.append($('<option>').val(String(u)).text(t));
         $sel.val(filter === null ? '' : String(filter)).on('change', () => { filter = $sel.val() === '' ? null : Number($sel.val()); draw(); });
-        $top.append($el('label', 'lorerev_hist_filter_row', 'Show: ').append($sel),
-            $el('div', 'lorerev_dim', 'Every saved change is listed here, newest first. Click a row\'s header to fold or unfold it (newest starts open). "Restore old version" puts the Old side back into the lorebook; the text it replaces is saved here too, so nothing is lost. For a new entry, "Remove this entry" takes it out again (only while it is still exactly as created), and "Create it again" brings back a removed entry with all its settings. "Clear old history" (or a row\'s trash icon) removes old saved changes from History only; the lorebook itself is not changed.'));
+        // kind filter: the kinds of change in this History (approved changes, manual edits, restores, ...)
+        const kinds = actionKinds(archive);
+        if (kind && !kinds.some(k => k.action === kind)) kind = '';
+        const $kind = $('<select class="text_pole lorerev_hist_kind">').append($('<option value="">All kinds of change</option>'));
+        for (const k of kinds) $kind.append($('<option>').val(k.action).text(`${k.label} (${k.count})`));
+        $kind.val(kind).on('change', () => { kind = String($kind.val() ?? ''); draw(); });
+        $top.append($el('div', 'lorerev_hist_filters').append(
+            $el('label', 'lorerev_hist_filter_row', 'Show: ').append($sel),
+            $el('label', 'lorerev_hist_filter_row', 'Kind: ').append($kind)),
+            $el('div', 'lorerev_dim', 'Every saved change is listed here, newest first. Click a row\'s header to fold or unfold it (newest starts open). "Restore old version" puts the Old side back into the lorebook (that works for "Manual edit" records, made with the pencil in the sidebar, too); the text it replaces is saved here too, so nothing is lost. For a new entry, "Remove this entry" takes it out again (only while it is still exactly as created), and "Create it again" brings back a removed entry with all its settings. "Clear old history" (or a row\'s trash icon) removes old saved changes from History only; the lorebook itself is not changed.'));
 
         if (archive?.records?.length) {
             const $choice = $('<select class="text_pole lorerev_hist_clear_select">');
@@ -67,10 +77,10 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
                     .on('click', clearOld)));
         }
 
-        const records = recordsFor(archive, filter);
+        const records = filterByAction(recordsFor(archive, filter), kind);
         $list.empty();
         if (!records.length) {
-            $list.append($el('div', 'lorerev_dim lorerev_hist_empty', filter === null ? 'No saved changes yet for this lorebook.' : 'No saved changes yet for this entry.'));
+            $list.append($el('div', 'lorerev_dim lorerev_hist_empty', kind ? `No “${actionLabel(kind)}” records${filter === null ? '' : ' for this entry'}.` : filter === null ? 'No saved changes yet for this lorebook.' : 'No saved changes yet for this entry.'));
             return;
         }
         records.forEach((r, i) => $list.append(recordView(r, i === 0)));
@@ -84,7 +94,7 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
         const title = $el('div', 'lorerev_card_title lorerev_card_toggle').append(
             $el('span', `lorerev_collapse fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'}`).attr('title', collapsed ? 'Show this change' : 'Hide the details of this change'),
             $el('b', '', r.title || `Entry #${r.uid}`), $el('span', 'lorerev_dim', ` #${r.uid} · ${when(r.time)}`),
-            $el('span', 'lorerev_pill', actionLabel(r.action)), r.edited ? $el('span', 'lorerev_pill lorerev_pill_edited', 'Edited by you') : '');
+            $el('span', `lorerev_pill${r.action === 'manual' ? ' lorerev_pill_manual' : ''}`, actionLabel(r.action)), r.edited ? $el('span', 'lorerev_pill lorerev_pill_edited', 'Edited by you') : '');
         title.on('click', () => { folded.set(r.id, !collapsed); $r.replaceWith(recordView(r, isNewest)); });
         $r.append(title);
         // Summary only when folded: entry name, timestamp, action (and a short note if present)
@@ -104,6 +114,7 @@ export async function openHistory({ book, uid = null, onRestore } = {}) {
             else info.push(src ? `Put back the old version from the change of ${when(src.time)}` : 'Put back an older version');
         }
         if (r.action === 'create') info.push(r.settingsFrom && typeof r.settingsFrom === 'object' ? `Settings copied from “${r.settingsFrom.title}” (#${r.settingsFrom.uid})` : 'SillyTavern\'s default settings');
+        if (r.action === 'manual') info.push(`Edited by hand in LoreReviser's entry editor (no model)${Array.isArray(r.changed) && r.changed.length ? `: ${describeChanged(r.changed)}` : ''}`);
         if (r.action === 'remove' && r.via === 'undo') info.push('Removed with Undo on its review card');
         if (r.originalUid !== undefined) info.push(`Was #${r.originalUid} before it was removed`);
         if (r.oldTitle !== undefined) info.push(`Title changed from “${r.oldTitle}”`);

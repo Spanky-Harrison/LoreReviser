@@ -11,4 +11,5 @@ fresh; node e2e-revision.mjs | tail -1
 fresh; node e2e-archive.mjs | tail -1
 fresh; node e2e-create.mjs | tail -1
 fresh; node e2e-passage.mjs | tail -1
+fresh; node e2e-direct-edit.mjs | tail -1
 stop

@@ -3,6 +3,7 @@
 // changes as review cards (review.js). Approving writes to the lorebook and archives the old version (apply.js,
 // archive.js); History (history.js) shows saved versions with Restore. Orphaned history files can be relinked here.
 // "New entries" mode (create.js) asks the model for new entries in a chosen lorebook and shows them as the same review cards.
+// The pencil next to each sidebar entry opens it in the direct editor (entry-editor.js): read and edit by hand, no model.
 
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { getLinkedBooks } from './lorebooks.js';
@@ -20,6 +21,7 @@ import { deleteOrphanHistory } from './apply.js';
 import { findOrphans } from './archive-core.js';
 import { prepareCreateSession, sendCreateSession, loadBookEntries } from './create.js';
 import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, CREATE_RULES_NOTE } from './create-core.js';
+import { openEntryEditor } from './entry-editor.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -395,6 +397,8 @@ export async function openModal() {
                 $list.append($('<label class="lorerev_entry">').toggleClass('lorerev_disabled', e.disabled).append(
                     $('<input type="checkbox" class="lorerev_entry_check">').attr('data-uid', e.uid),
                     $('<span>').text(e.label),
+                    $('<i class="lorerev_entry_open fa-solid fa-pen-to-square">').attr('data-uid', e.uid)
+                        .attr('title', 'Open this entry to read or edit its keys and text (no model is used)'),
                 ));
             }
             $book.append($list);
@@ -411,6 +415,11 @@ export async function openModal() {
             $row.find('.lorerev_book_check').on('change', function () {
                 selection.set(book.name, this.checked ? new Set(book.entries.map(e => e.uid)) : new Set());
                 saveSelection(selection); refreshChecks();
+            });
+            // pencil: open the entry in the direct editor. It sits inside the <label>, so stop the click from ticking the checkbox.
+            $list.on('click', '.lorerev_entry_open', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                openEntryEditor({ book: book.name, uid: Number(this.dataset.uid), onSaved: refreshBooks });
             });
             // single entry checkbox
             $list.on('change', '.lorerev_entry_check', function () {
