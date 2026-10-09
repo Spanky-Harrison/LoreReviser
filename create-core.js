@@ -6,7 +6,7 @@
 
 import { changeTypeSection } from './changetype.js';
 
-/** Editable system prompt for new entries (settings.createSystemPrompt; edited in the modal under "New entry prompt"). */
+/** Editable system prompt for new entries (settings.createSystemPrompt; edited in the Prompts window under "New entry prompt"). */
 export const DEFAULT_CREATE_SYSTEM_PROMPT = `You are a careful lorebook writer for an ongoing roleplay. Lorebook entries are short reference texts that are injected into the roleplay prompt when their keywords appear.
 
 You will receive the character card, the lore that is currently active, the recent chat, a list of the entries that already exist in the target lorebook, and the user's request. Write the NEW lorebook entries the user asks for.

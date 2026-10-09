@@ -102,6 +102,22 @@ try {
   check('profile dropdown lists Connection Manager profiles', opts.includes('Profile A (Chat Completion)') && opts.includes('Profile B (KoboldCpp)'));
   await page.selectOption('#lorerev_profile', 'prof-b');
 
+  // ---- Prompts window: the prompt sections are no longer above the chat; a header button opens them ----
+  check('prompts: no prompt sections in the main window', (await page.locator('.lorerev_root details.lorerev_system, .lorerev_root #lorerev_system, .lorerev_root #lorerev_rules, .lorerev_root .lorerev_int_text').count()) === 0);
+  check('prompts: chat area sits right under the header (nothing between)', await page.evaluate(() => document.querySelector('.lorerev_main').firstElementChild.id === 'lorerev_chat'));
+  const chatH = await page.evaluate(() => document.querySelector('#lorerev_chat').getBoundingClientRect().height);
+  check('prompts: chat window gets most of the height', chatH > 900 * 0.45, String(chatH));
+  check('prompts: header button with tooltip, not marked edited yet', (await page.isVisible('#lorerev_prompts_btn')) && /system prompt/i.test(await page.getAttribute('#lorerev_prompts_btn', 'title')) && (await page.textContent('#lorerev_prompts_btn_edited')) === '');
+  await page.selectOption('#lorerev_changetype', 'retcon');
+  const openPrompts = async () => { await page.click('#lorerev_prompts_btn'); await page.waitForSelector('dialog[open].lorerev_prompts_popup .lorerev_prompts_root', { state: 'visible' }); };
+  const closePrompts = async () => { await page.click('dialog[open].lorerev_prompts_popup .popup-button-ok'); await page.waitForSelector('.lorerev_prompts_root', { state: 'detached' }); };
+  await openPrompts();
+  check('prompts: button opens the window with all five sections', JSON.stringify(await page.$$eval('.lorerev_prompts_root details.lorerev_system > summary', els => els.map(e => e.childNodes[0].textContent.trim()))) === JSON.stringify(['System prompt', 'Rewrite intensity wording', 'Change type wording', 'Reply format rules (advanced)', 'New entry prompt']));
+  const pdims = await page.evaluate(() => document.querySelector('dialog[open].lorerev_prompts_popup').getBoundingClientRect());
+  check('prompts: window is large', pdims.width > 1000 && pdims.height > 700, JSON.stringify(pdims));
+  await page.waitForTimeout(800); // let the popup's open animation finish
+  await page.screenshot({ path: `${SHOTS}/57-prompts-window.png` });
+
   // system prompt
   await page.click('.lorerev_system summary >> nth=0');
   await page.fill('#lorerev_system', 'MY CUSTOM SYSTEM PROMPT');
@@ -113,7 +129,6 @@ try {
   await page.fill('.lorerev_int_text[data-level="light"]', 'MY LIGHT WORDING');
   check('prompt parts: only the edited level is stored', JSON.stringify(await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.intensityTexts)) === '{"light":"MY LIGHT WORDING"}');
   check('prompt parts: edited marker shown', /edited/.test(await page.textContent('[data-edited="light"]')) && (await page.textContent('[data-edited="heavy"]')) === '');
-  await page.selectOption('#lorerev_changetype', 'retcon');
   await page.click('#lorerev_ct_box summary');
   await page.fill('.lorerev_ct_text[data-type="development"]', 'MY DEV WORDING');
   await page.click('#lorerev_ct_box summary');
@@ -134,11 +149,21 @@ try {
   await page.click('[data-restore="balanced"]'); // restoring an unedited level changes nothing
   check('restore default: other levels untouched', (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'MY LIGHT WORDING');
   // no button in the modal may wrap its text (ST's .menu_button is width:min-content)
-  const wrapped = await page.$$eval('.lorerev_root .menu_button', els => els.filter(el => el.offsetParent).filter(el => el.scrollWidth > el.clientWidth || el.getBoundingClientRect().height > 2.2 * parseFloat(getComputedStyle(el).lineHeight || 20) + 8).map(el => el.textContent.trim()));
+  const wrapped = await page.$$eval('.lorerev_root .menu_button, .lorerev_prompts_root .menu_button', els => els.filter(el => el.offsetParent).filter(el => el.scrollWidth > el.clientWidth || el.getBoundingClientRect().height > 2.2 * parseFloat(getComputedStyle(el).lineHeight || 20) + 8).map(el => el.textContent.trim()));
   check('all modal buttons keep their text on one line', wrapped.length === 0, wrapped.join(' | '));
   const rb = await page.locator('#lorerev_system_reset').boundingBox();
   check('"Restore default" is one line and wide enough', rb.height < 40 && rb.width > 90 && (await page.textContent('#lorerev_system_reset')) === 'Restore default', JSON.stringify(rb));
   await page.click('#lorerev_int_box summary'); await page.click('#lorerev_rules_box summary'); // collapse again
+  // the system prompt Restore default works too, then the custom text goes back in for the persistence checks
+  await page.click('#lorerev_system_reset');
+  check('restore default: system prompt back to the default, unmarked', (await page.inputValue('#lorerev_system')).startsWith('You are a careful lorebook editor') && (await page.textContent('#lorerev_system_edited')) === '' && (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.systemPrompt)).startsWith('You are a careful lorebook editor'));
+  await page.fill('#lorerev_system', 'MY CUSTOM SYSTEM PROMPT');
+  check('prompts: edits are saved while typing', (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.systemPrompt)) === 'MY CUSTOM SYSTEM PROMPT');
+  await closePrompts();
+  check('prompts: closing returns to the main window; button now marked edited', (await page.isVisible('.lorerev_root')) && (await page.textContent('#lorerev_prompts_btn_edited')) === '(edited)');
+  await openPrompts();
+  check('prompts: edits are kept when the window is reopened', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT' && (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'MY LIGHT WORDING' && (await page.inputValue('#lorerev_rules')).startsWith('MY RULES') && (await page.textContent('#lorerev_system_edited')) === '(edited)');
+  await closePrompts();
 
   // depth
   const info0 = await page.textContent('#lorerev_depth_info');
@@ -210,9 +235,12 @@ try {
   await page.waitForSelector('.lorerev_book');
   check('reopen: selection restored', (await page.textContent('#lorerev_selected_info')) === '5 entries selected in 2 book(s)');
   check('reopen: profile restored', (await page.inputValue('#lorerev_profile')) === 'prof-b');
+  check('reopen: Prompts button marked edited', (await page.textContent('#lorerev_prompts_btn_edited')) === '(edited)');
+  await openPrompts();
   check('reopen: system prompt restored', (await page.inputValue('#lorerev_system')) === 'MY CUSTOM SYSTEM PROMPT');
   check('reopen: edited prompt parts restored', (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'MY LIGHT WORDING' && (await page.inputValue('.lorerev_int_text[data-level="heavy"]')).startsWith('HEAVY-HANDED.') && (await page.inputValue('#lorerev_rules')).startsWith('MY RULES'));
   check('reopen: change type + edited wording restored', (await page.inputValue('#lorerev_changetype')) === 'retcon' && (await page.inputValue('.lorerev_ct_text[data-type="development"]')) === 'MY DEV WORDING' && (await page.inputValue('.lorerev_ct_text[data-type="retcon"]')).startsWith('RETCON.'));
+  await closePrompts();
   check('reopen: intensity restored', (await page.inputValue('#lorerev_intensity')) === 'light');
   check('reopen: depth -1 restored with its label', (await page.inputValue('#lorerev_depth')) === '-1' && (await page.textContent('#lorerev_depth_info')) === 'No chat will be sent');
   await page.click('dialog[open] .popup-button-ok');

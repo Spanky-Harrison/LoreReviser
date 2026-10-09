@@ -224,8 +224,10 @@ try {
   await send('Passages, but the model sends the whole text.');
   check('7: full "content" in passages mode is used, and the card says so', (await newText(card('Queen Maren'))) === 'Stern but fair monarch, 57 years old.' && /sent the whole text instead of passages/.test(await card('Queen Maren').locator('.lorerev_attempt_info').textContent()));
 
-  // ================= 8. reply format rules: one editable set per style, each with Restore default =================
-  await page.click('#lorerev_rules_box summary');
+  // ================= 8. reply format rules: one editable set per style, each with Restore default (in the Prompts window) =================
+  const openPrompts = async () => { await page.click('#lorerev_prompts_btn'); await page.waitForSelector('dialog[open].lorerev_prompts_popup .lorerev_prompts_root', { state: 'visible' }); await page.click('#lorerev_rules_box summary'); };
+  const closePrompts = async () => { await page.click('dialog[open].lorerev_prompts_popup .popup-button-ok'); await page.waitForSelector('.lorerev_prompts_root', { state: 'detached' }); };
+  await openPrompts();
   check('8: both rule sets shown, each with its own Restore default', (await page.inputValue('#lorerev_prules')).includes('Do NOT write out whole entries') && (await page.inputValue('#lorerev_rules')).includes('the complete new text of the entry (not a diff)') && (await page.locator('#lorerev_rules_box .lorerev_restore').count()) === 2);
   const MY_P = '## Reply format (mine)\nReply with ONE JSON array of {id, edits: [{find, replace}]} objects.';
   const MY_F = '## Full rules (mine)\nReply with ONE JSON array of {id, content} objects.';
@@ -233,6 +235,7 @@ try {
   await page.fill('#lorerev_rules', MY_F);
   check('8: edits stored separately', await page.evaluate(([p, f]) => { const s = SillyTavern.getContext().extensionSettings.LoreReviser; return s.passageFormatRules === p && s.formatRules === f; }, [MY_P, MY_F]));
   check('8: no warning for acceptable edits; marked edited', !(await page.isVisible('#lorerev_prules_warn')) && !(await page.isVisible('#lorerev_rules_warn')) && (await page.textContent('#lorerev_prules_edited')) === '(edited)' && (await page.textContent('#lorerev_rules_box_edited')) === '(edited)');
+  await closePrompts();
   await fake.reset(); await fake.queue([{ content: '[]' }]);
   await send('Custom passages rules.');
   check('8: passages request ends with MY passages rules', sysMsg(await lastReq()).endsWith(MY_P));
@@ -240,6 +243,7 @@ try {
   await fake.reset(); await fake.queue([{ content: '[]' }]);
   await send('Custom full rules.');
   check('8: customised Full rewrite rules keep working for Full rewrite', sysMsg(await lastReq()).endsWith(MY_F));
+  await openPrompts();
   await page.fill('#lorerev_prules', 'Reply with a poem.');
   check('8: broken passages rules warn (find / replace / edits)', (await page.isVisible('#lorerev_prules_warn')) && /"find" field/.test(await page.textContent('#lorerev_prules_warn')) && /edits\?: \[\{find, replace\}\]/.test(await page.textContent('#lorerev_prules_warn')));
   await page.evaluate(() => document.querySelector('#lorerev_rules_box').scrollIntoView({ block: 'start' }));
@@ -248,7 +252,7 @@ try {
   check('8: Restore default (passages) resets only that set', (await page.inputValue('#lorerev_prules')).includes('Do NOT write out whole entries') && await page.evaluate((f) => { const s = SillyTavern.getContext().extensionSettings.LoreReviser; return s.passageFormatRules === '' && s.formatRules === f; }, MY_F));
   await page.click('#lorerev_rules_reset');
   check('8: Restore default (full) resets the other set', await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.formatRules === '') && !(await page.isVisible('#lorerev_prules_warn')) && (await page.textContent('#lorerev_rules_box_edited')) === '');
-  await page.click('#lorerev_rules_box summary');
+  await closePrompts();
   await page.selectOption('#lorerev_replystyle', 'passages');
 
   // ================= 9. reply token override still wins =================

@@ -1,27 +1,29 @@
-// The LoreReviser modal: profile + system prompt settings, linked-lorebook sidebar, chat-style window.
+// The LoreReviser modal: profile and request settings, linked-lorebook sidebar, chat-style window.
 // Send builds one prompt (prompt.js), sends it on the chosen profile (revision.js) and shows the proposed
 // changes as review cards (review.js). Approving writes to the lorebook and archives the old version (apply.js,
 // archive.js); History (history.js) shows saved versions with Restore. Orphaned history files can be relinked here.
 // "New entries" mode (create.js) asks the model for new entries in a chosen lorebook and shows them as the same review cards.
 // The pencil next to each sidebar entry opens it in the direct editor (entry-editor.js): read and edit by hand, no model.
+// The "Prompts" button in the header opens the Prompts window (prompts-window.js) with every editable prompt text.
 
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { getLinkedBooks } from './lorebooks.js';
-import { MODULE_NAME, getSettings, DEFAULT_SYSTEM_PROMPT } from './settings.js';
+import { MODULE_NAME, getSettings } from './settings.js';
 import { prepareSession, sendSession, runState, describeError } from './revision.js';
 import { renderSession } from './review.js';
 import { normalizeDepth, depthLabel } from './depth.js';
 import { INTENSITIES, normalizeIntensity } from './intensity.js';
 import { CHANGE_TYPES, normalizeChangeType } from './changetype.js';
 import { budgetNote } from './budget.js';
-import { DEFAULT_FORMAT_RULES, checkFormatRules, FORMAT_RULES_NOTE, DEFAULT_PASSAGE_RULES, checkPassageRules, PASSAGE_RULES_NOTE, REPLY_STYLES, normalizeReplyStyle, checkRulesForStyle } from './rules.js';
+import { DEFAULT_FORMAT_RULES, FORMAT_RULES_NOTE, DEFAULT_PASSAGE_RULES, PASSAGE_RULES_NOTE, REPLY_STYLES, normalizeReplyStyle, checkRulesForStyle } from './rules.js';
 import { openHistory, openHistoryPicker } from './history.js';
 import { getArchiveIndex, relinkArchive, readArchive } from './archive.js';
 import { deleteOrphanHistory } from './apply.js';
 import { findOrphans } from './archive-core.js';
 import { prepareCreateSession, sendCreateSession, loadBookEntries } from './create.js';
-import { DEFAULT_CREATE_SYSTEM_PROMPT, DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, CREATE_RULES_NOTE } from './create-core.js';
+import { DEFAULT_CREATE_FORMAT_RULES, checkCreateRules, CREATE_RULES_NOTE } from './create-core.js';
 import { openEntryEditor } from './entry-editor.js';
+import { openPromptsWindow, promptsEdited } from './prompts-window.js';
 
 /** Conversation shown in the chat window. Kept while the page is open; cleared when the chat changes. */
 let conversation = [];
@@ -90,6 +92,7 @@ const TEMPLATE = `
             <input id="lorerev_reply" type="number" min="0" step="100" class="text_pole"></label>
         <label title="Context size used for the 'prompt may be too large' warning. 0 = take it from the profile's preset.">Context
             <input id="lorerev_context" type="number" min="0" step="1000" class="text_pole"></label>
+        <div id="lorerev_prompts_btn" class="menu_button" title="Edit the prompts sent to the model: system prompt, rewrite intensity wording, change type wording, reply format rules and the new entry prompt (opens a separate window)"><i class="fa-solid fa-sliders"></i> Prompts <span id="lorerev_prompts_btn_edited" class="lorerev_edited"></span></div>
     </div>
     <div class="lorerev_body">
         <div class="lorerev_sidebar">
@@ -100,66 +103,6 @@ const TEMPLATE = `
             <div id="lorerev_orphans"></div>
         </div>
         <div class="lorerev_main">
-            <div class="lorerev_prompts">
-            <details class="lorerev_system">
-                <summary>System prompt <span class="lorerev_edited" id="lorerev_system_edited"></span></summary>
-                <textarea id="lorerev_system" class="text_pole" rows="6"></textarea>
-                <div class="menu_button lorerev_restore" id="lorerev_system_reset" title="Put the original system prompt back">Restore default</div>
-            </details>
-            <details class="lorerev_system" id="lorerev_int_box">
-                <summary>Rewrite intensity wording <span class="lorerev_edited" id="lorerev_int_edited"></span></summary>
-                <div class="lorerev_dim">The text that is added to the system message for the intensity chosen at the top. Each level is edited separately. The heading <code>## Rewrite intensity: &lt;level&gt;</code> is added automatically and stays fixed, so the system prompt's reference to the "Rewrite intensity" section remains valid.</div>
-                ${Object.entries(INTENSITIES).map(([k, v]) => `
-                <div class="lorerev_part">
-                    <div class="lorerev_part_head"><b>${v.label}</b> <span class="lorerev_edited" data-edited="${k}"></span>
-                        <div class="menu_button lorerev_restore" data-restore="${k}" title="Put the original ${v.label} wording back">Restore default</div></div>
-                    <textarea class="text_pole lorerev_int_text" data-level="${k}" rows="3"></textarea>
-                </div>`).join('')}
-            </details>
-            <details class="lorerev_system" id="lorerev_ct_box">
-                <summary>Change type wording <span class="lorerev_edited" id="lorerev_ct_edited"></span></summary>
-                <div class="lorerev_dim">The text that is added to the system message, after the rewrite intensity, for the change type chosen at the top (Development or Retcon). Each type is edited separately. The heading <code>## Change type: &lt;type&gt;</code> is added automatically and stays fixed, so the system prompt's reference to the "Change type" section remains valid.</div>
-                ${Object.entries(CHANGE_TYPES).map(([k, v]) => `
-                <div class="lorerev_part">
-                    <div class="lorerev_part_head"><b>${v.label}</b> <span class="lorerev_edited" data-ct-edited="${k}"></span>
-                        <div class="menu_button lorerev_restore" data-restore-ct="${k}" title="Put the original ${v.label} wording back">Restore default</div></div>
-                    <textarea class="text_pole lorerev_ct_text" data-type="${k}" rows="4"></textarea>
-                </div>`).join('')}
-            </details>
-            <details class="lorerev_system" id="lorerev_rules_box">
-                <summary>Reply format rules (advanced) <span class="lorerev_edited" id="lorerev_rules_box_edited"></span></summary>
-                <div class="lorerev_dim">Appended to the system message, last. They tell the model how to answer so LoreReviser can read the reply. There is one set per <b>Reply style</b> (chosen at the top); only the set for the chosen style is sent. A warning appears below a set if an edit would break reading the reply.</div>
-                <div class="lorerev_part" id="lorerev_prules_part">
-                    <div class="lorerev_part_head"><b>Changed passages only</b> <span class="lorerev_edited" id="lorerev_prules_edited"></span>
-                        <div class="menu_button lorerev_restore" id="lorerev_prules_reset" title="Put the original rules for “Changed passages only” back">Restore default</div></div>
-                    <div class="lorerev_dim">Keep it a JSON array of objects with an <code>id</code> and an <code>edits</code> list of <code>{find, replace}</code>.</div>
-                    <div id="lorerev_prules_warn" class="lorerev_rules_warn" style="display:none"></div>
-                    <textarea id="lorerev_prules" class="text_pole" rows="10"></textarea>
-                </div>
-                <div class="lorerev_part" id="lorerev_rules_part">
-                    <div class="lorerev_part_head"><b>Full rewrite</b> <span class="lorerev_edited" id="lorerev_rules_edited"></span>
-                        <div class="menu_button lorerev_restore" id="lorerev_rules_reset" title="Put the original rules for “Full rewrite” back">Restore default</div></div>
-                    <div class="lorerev_dim">Keep it a JSON array of objects with an <code>id</code> and the full <code>content</code>.</div>
-                    <div id="lorerev_rules_warn" class="lorerev_rules_warn" style="display:none"></div>
-                    <textarea id="lorerev_rules" class="text_pole" rows="10"></textarea>
-                </div>
-            </details>
-            <details class="lorerev_system" id="lorerev_create_box">
-                <summary>New entry prompt <span class="lorerev_edited" id="lorerev_create_edited"></span></summary>
-                <div class="lorerev_dim">Used instead of the system prompt and reply format rules above when you ask for <b>New entries</b>. The <code>## Change type: &lt;type&gt;</code> section (chosen at the top) is added between them; the rewrite intensity is not used for new entries, because there is no existing text to rewrite.</div>
-                <div class="lorerev_part">
-                    <div class="lorerev_part_head"><b>System prompt for new entries</b> <span class="lorerev_edited" id="lorerev_create_sys_edited"></span>
-                        <div class="menu_button lorerev_restore" id="lorerev_create_sys_reset" title="Put the original new-entry system prompt back">Restore default</div></div>
-                    <textarea id="lorerev_create_sys" class="text_pole" rows="6"></textarea>
-                </div>
-                <div class="lorerev_part">
-                    <div class="lorerev_part_head"><b>Reply format rules for new entries (advanced)</b> <span class="lorerev_edited" id="lorerev_create_rules_edited"></span>
-                        <div class="menu_button lorerev_restore" id="lorerev_create_rules_reset" title="Put the original new-entry reply format rules back">Restore default</div></div>
-                    <div id="lorerev_create_rules_warn" class="lorerev_rules_warn" style="display:none"></div>
-                    <textarea id="lorerev_create_rules" class="text_pole" rows="8"></textarea>
-                </div>
-            </details>
-            </div>
             <div id="lorerev_chat" class="lorerev_chat"></div>
             <div class="lorerev_infobar">
                 <div id="lorerev_selected_info" class="lorerev_dim"></div>
@@ -229,123 +172,10 @@ export async function openModal() {
         $n.on('input', () => { settings[key] = Math.max(0, Math.floor(Number($n.val()) || 0)); save(); });
     }
 
-    // --- system prompt ---
-    const $system = $root.find('#lorerev_system').val(settings.systemPrompt);
-    const markEdited = ($el, on) => $el.text(on ? '(edited)' : '');
-    const refreshSystemMark = () => markEdited($root.find('#lorerev_system_edited'), settings.systemPrompt.trim() !== DEFAULT_SYSTEM_PROMPT.trim());
-    $system.on('input', () => { settings.systemPrompt = String($system.val()); refreshSystemMark(); save(); });
-    $root.find('#lorerev_system_reset').on('click', () => {
-        $system.val(DEFAULT_SYSTEM_PROMPT).trigger('input');
-    });
-    refreshSystemMark();
-
-    // --- rewrite intensity wording (one editable text per level; settings keep only the edited ones) ---
-    const refreshIntMarks = () => {
-        let any = false;
-        for (const k of Object.keys(INTENSITIES)) {
-            const on = k in settings.intensityTexts;
-            any ||= on;
-            markEdited($root.find(`[data-edited="${k}"]`), on);
-        }
-        markEdited($root.find('#lorerev_int_edited'), any);
-    };
-    $root.find('.lorerev_int_text').each(function () {
-        const $t = $(this), k = String($t.data('level'));
-        const defaults = INTENSITIES[k].text;
-        $t.val(settings.intensityTexts[k] ?? defaults);
-        $t.on('input', () => {
-            const v = String($t.val());
-            // An empty or unchanged text means "use the default"; only real edits are stored, so default improvements still reach you.
-            if (!v.trim() || v.trim() === defaults.trim()) delete settings.intensityTexts[k]; else settings.intensityTexts[k] = v;
-            refreshIntMarks(); save();
-        });
-        $t.on('change', () => { if (!String($t.val()).trim()) $t.val(defaults); }); // left empty: show the default that is used
-    });
-    $root.find('[data-restore]').on('click', function () {
-        const k = String($(this).data('restore'));
-        $root.find(`.lorerev_int_text[data-level="${k}"]`).val(INTENSITIES[k].text).trigger('input');
-    });
-    refreshIntMarks();
-
-    // --- change type wording (same behaviour as the intensity wording) ---
-    const refreshCtMarks = () => {
-        let any = false;
-        for (const k of Object.keys(CHANGE_TYPES)) {
-            const on = k in settings.changeTypeTexts;
-            any ||= on;
-            markEdited($root.find(`[data-ct-edited="${k}"]`), on);
-        }
-        markEdited($root.find('#lorerev_ct_edited'), any);
-    };
-    $root.find('.lorerev_ct_text').each(function () {
-        const $t = $(this), k = String($t.data('type'));
-        const defaults = CHANGE_TYPES[k].text;
-        $t.val(settings.changeTypeTexts[k] ?? defaults);
-        $t.on('input', () => {
-            const v = String($t.val());
-            if (!v.trim() || v.trim() === defaults.trim()) delete settings.changeTypeTexts[k]; else settings.changeTypeTexts[k] = v;
-            refreshCtMarks(); save();
-        });
-        $t.on('change', () => { if (!String($t.val()).trim()) $t.val(defaults); });
-    });
-    $root.find('[data-restore-ct]').on('click', function () {
-        const k = String($(this).data('restore-ct'));
-        $root.find(`.lorerev_ct_text[data-type="${k}"]`).val(CHANGE_TYPES[k].text).trigger('input');
-    });
-    refreshCtMarks();
-
-    // --- reply format rules, one set per reply style, each with a warning when it would break the parser ---
-    const ruleSets = [
-        { key: 'passageFormatRules', box: '#lorerev_prules', warn: '#lorerev_prules_warn', mark: '#lorerev_prules_edited', reset: '#lorerev_prules_reset', def: DEFAULT_PASSAGE_RULES, check: checkPassageRules, note: PASSAGE_RULES_NOTE },
-        { key: 'formatRules', box: '#lorerev_rules', warn: '#lorerev_rules_warn', mark: '#lorerev_rules_edited', reset: '#lorerev_rules_reset', def: DEFAULT_FORMAT_RULES, check: checkFormatRules, note: FORMAT_RULES_NOTE },
-    ];
-    const refreshRulesBox = () => markEdited($root.find('#lorerev_rules_box_edited'), ruleSets.some(r => !!settings[r.key]));
-    for (const r of ruleSets) {
-        const $box = $root.find(r.box).val(settings[r.key] || r.def);
-        const $warn = $root.find(r.warn);
-        const refresh = () => {
-            const problems = r.check(String($box.val()));
-            if (problems.length) {
-                $warn.text(`Warning: these rules may break reading the reply (${problems.join('; ')}). ${r.note} If the model does not answer in that format, no changes can be shown. Use "Restore default" to go back to the original rules.`).show();
-            } else $warn.hide().text('');
-            markEdited($root.find(r.mark), !!settings[r.key]);
-            refreshRulesBox();
-        };
-        $box.on('input', () => {
-            const v = String($box.val());
-            // Only real edits are stored ('' = the default), so improvements of the default still reach you.
-            settings[r.key] = !v.trim() || v.trim() === r.def.trim() ? '' : v;
-            refresh(); save();
-        });
-        $box.on('change', () => { if (!String($box.val()).trim()) { $box.val(r.def); refresh(); } });
-        $root.find(r.reset).on('click', () => $box.val(r.def).trigger('input'));
-        refresh();
-    }
-
-    // --- new entry prompt: own system prompt and reply-format rules (same storage rules as above) ---
-    const $cSys = $root.find('#lorerev_create_sys').val(settings.createSystemPrompt);
-    const $cRules = $root.find('#lorerev_create_rules').val(settings.createFormatRules || DEFAULT_CREATE_FORMAT_RULES);
-    const $cRulesWarn = $root.find('#lorerev_create_rules_warn');
-    const refreshCreateMarks = () => {
-        const sysEdited = settings.createSystemPrompt.trim() !== DEFAULT_CREATE_SYSTEM_PROMPT.trim();
-        markEdited($root.find('#lorerev_create_sys_edited'), sysEdited);
-        markEdited($root.find('#lorerev_create_rules_edited'), !!settings.createFormatRules);
-        markEdited($root.find('#lorerev_create_edited'), sysEdited || !!settings.createFormatRules);
-        const problems = checkCreateRules(String($cRules.val()));
-        if (problems.length) $cRulesWarn.text(`Warning: these rules may break reading the reply (${problems.join('; ')}). ${CREATE_RULES_NOTE} Use "Restore default" to go back to the original rules.`).show();
-        else $cRulesWarn.hide().text('');
-    };
-    $cSys.on('input', () => { settings.createSystemPrompt = String($cSys.val()).trim() ? String($cSys.val()) : DEFAULT_CREATE_SYSTEM_PROMPT; refreshCreateMarks(); save(); });
-    $cSys.on('change', () => { if (!String($cSys.val()).trim()) $cSys.val(DEFAULT_CREATE_SYSTEM_PROMPT); });
-    $root.find('#lorerev_create_sys_reset').on('click', () => $cSys.val(DEFAULT_CREATE_SYSTEM_PROMPT).trigger('input'));
-    $cRules.on('input', () => {
-        const v = String($cRules.val());
-        settings.createFormatRules = !v.trim() || v.trim() === DEFAULT_CREATE_FORMAT_RULES.trim() ? '' : v;
-        refreshCreateMarks(); save();
-    });
-    $cRules.on('change', () => { if (!String($cRules.val()).trim()) { $cRules.val(DEFAULT_CREATE_FORMAT_RULES); refreshCreateMarks(); } });
-    $root.find('#lorerev_create_rules_reset').on('click', () => $cRules.val(DEFAULT_CREATE_FORMAT_RULES).trigger('input'));
-    refreshCreateMarks();
+    // --- Prompts window (system prompt, wordings, reply format rules, new entry prompt) ---
+    const refreshPromptsBtn = () => $root.find('#lorerev_prompts_btn_edited').text(promptsEdited(settings) ? '(edited)' : '');
+    $root.find('#lorerev_prompts_btn').on('click', () => openPromptsWindow({ onClose: refreshPromptsBtn }));
+    refreshPromptsBtn();
 
     // --- sidebar ---
     const $books = $root.find('#lorerev_books');
@@ -669,7 +499,7 @@ export async function openModal() {
         try {
             const session = await prepareCreateSession({ profile, settings, book, copyFrom: copyVal === '' ? null : Number(copyVal), useExample: !!$newExample.prop('checked'), instruction: text });
             await runRequest(session, sendCreateSession, abort, checkCreateRules(settings.createFormatRules || DEFAULT_CREATE_FORMAT_RULES),
-                `${CREATE_RULES_NOTE} Sending anyway; if no entries show up, use "Restore default" under "New entry prompt".`);
+                `${CREATE_RULES_NOTE} Sending anyway; if no entries show up, open Prompts and use "Restore default" under "New entry prompt".`);
         } catch (e) {
             console.error('[LoreReviser]', e);
             toastr.error(describeError(e), 'LoreReviser');
@@ -707,7 +537,7 @@ export async function openModal() {
             const session = await prepareSession({ profile, settings, selection, instruction: text });
             const passages = session.replyStyle === 'passages';
             await runRequest(session, sendSession, abort, checkRulesForStyle(session.replyStyle, passages ? (settings.passageFormatRules || DEFAULT_PASSAGE_RULES) : (settings.formatRules || DEFAULT_FORMAT_RULES)),
-                `${passages ? PASSAGE_RULES_NOTE : FORMAT_RULES_NOTE} Sending anyway; if no changes show up, use "Restore default" under "Reply format rules (advanced)" (${passages ? 'Changed passages only' : 'Full rewrite'}).`);
+                `${passages ? PASSAGE_RULES_NOTE : FORMAT_RULES_NOTE} Sending anyway; if no changes show up, open Prompts and use "Restore default" under "Reply format rules (advanced)" (${passages ? 'Changed passages only' : 'Full rewrite'}).`);
         } catch (e) {
             console.error('[LoreReviser]', e);
             toastr.error(describeError(e), 'LoreReviser');
