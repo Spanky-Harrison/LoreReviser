@@ -281,6 +281,31 @@ try {
   await propose('Anything new?', [{ content: 'Sorry, I cannot help with that.' }]);
   check('12: unreadable reply -> error with the raw reply', /The model's reply could not be used/.test(await page.locator('.lorerev_msg.lorerev_error').last().textContent()) && (await page.locator('.lorerev_msg.lorerev_error').last().locator('pre').textContent()).includes('Sorry'));
 
+  // ================= 12b. New entry prompt is edited in the Prompts window and used by the next Propose =================
+  await page.click('#lorerev_prompts_btn');
+  await page.waitForSelector('dialog[open].lorerev_prompts_popup .lorerev_prompts_root', { state: 'visible' });
+  await page.click('#lorerev_create_box summary');
+  await page.fill('#lorerev_create_sys', 'MY NEW-ENTRY PROMPT: write tiny entries.');
+  check('12b: edited new-entry prompt stored and marked', (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.createSystemPrompt)) === 'MY NEW-ENTRY PROMPT: write tiny entries.' && (await page.textContent('#lorerev_create_edited')) === '(edited)');
+  await page.fill('#lorerev_create_rules', 'Reply with a poem.');
+  check('12b: broken new-entry rules warn', await page.isVisible('#lorerev_create_rules_warn'));
+  await page.click('#lorerev_create_rules_reset');
+  check('12b: Restore default clears the rules override and the warning', (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.createFormatRules)) === '' && !(await page.isVisible('#lorerev_create_rules_warn')));
+  await page.click('dialog[open].lorerev_prompts_popup .popup-button-ok');
+  await page.waitForSelector('.lorerev_prompts_root', { state: 'detached' });
+  const req12b = await propose('Anything new?', [{ content: '[]' }]);
+  check('12b: next Propose uses the edited new-entry prompt', sysMsg(req12b).startsWith('MY NEW-ENTRY PROMPT: write tiny entries.') && sysMsg(req12b).includes('"title": "..."'), sysMsg(req12b).slice(0, 120));
+  await page.click('#lorerev_prompts_btn');
+  await page.waitForSelector('dialog[open].lorerev_prompts_popup .lorerev_prompts_root', { state: 'visible' });
+  check('12b: reopened window keeps the edit', (await page.inputValue('#lorerev_create_sys')) === 'MY NEW-ENTRY PROMPT: write tiny entries.');
+  await page.click('#lorerev_create_box summary');
+  await page.click('#lorerev_create_sys_reset');
+  check('12b: Restore default puts the original new-entry prompt back', (await page.inputValue('#lorerev_create_sys')).startsWith('You are a careful lorebook writer') && (await page.textContent('#lorerev_create_edited')) === '');
+  await page.click('dialog[open].lorerev_prompts_popup .popup-button-ok');
+  await page.waitForSelector('.lorerev_prompts_root', { state: 'detached' });
+  const req12c = await propose('Anything new?', [{ content: '[]' }]);
+  check('12b: after Restore default the next Propose uses the default prompt again', sysMsg(req12c).startsWith('You are a careful lorebook writer'));
+
   // ================= 13. Safety: copy source or target book gone before Approve =================
   await chooseBook('Eldoria', 0);
   await propose('Add the harbor.', [{ content: JSON.stringify([{ title: 'Harbor', keys: ['harbor'], content: 'Busy harbor.' }]) }]);

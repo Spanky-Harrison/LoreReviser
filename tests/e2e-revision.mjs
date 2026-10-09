@@ -665,11 +665,15 @@ try {
 
   // ================= X. editable system-message parts (intensity wording + reply format rules) =================
   await page.selectOption('#lorerev_intensity', 'light');
+  const openPrompts = async () => { await page.click('#lorerev_prompts_btn'); await page.waitForSelector('dialog[open].lorerev_prompts_popup .lorerev_prompts_root', { state: 'visible' }); };
+  const closePrompts = async () => { await page.click('dialog[open].lorerev_prompts_popup .popup-button-ok'); await page.waitForSelector('.lorerev_prompts_root', { state: 'detached' }); };
+  await openPrompts();
   await page.click('#lorerev_int_box summary');
   await page.fill('.lorerev_int_text[data-level="light"]', 'LIGHT (mine): touch only the currency line.');
   await page.click('#lorerev_rules_box summary');
   const CUSTOM_RULES = '## Reply format (mine)\nReply with ONE JSON array of {id, keys?, secondary_keys?, content?, note?} objects, nothing else.';
   await page.fill('#lorerev_rules', CUSTOM_RULES);
+  await closePrompts();
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }]);
   await send('X: change the currency.');
@@ -679,8 +683,12 @@ try {
   check('X: edited rules replace the default rules, and come last', xSys.endsWith(CUSTOM_RULES) && !xSys.includes('## Reply format (strict)'));
   check('X: system prompt text itself unchanged and still refers to the Rewrite intensity section', /Rewrite intensity/.test(xSys.split('## Rewrite intensity:')[0]));
   check('X: acceptable rules -> no warning in the chat', (await page.locator('.lorerev_msg.lorerev_warn:has-text("reply format rules")').count()) === 0);
+  await openPrompts();
+  check('X: Prompts window reopens with the edits', (await page.inputValue('.lorerev_int_text[data-level="light"]')) === 'LIGHT (mine): touch only the currency line.' && (await page.inputValue('#lorerev_rules')) === CUSTOM_RULES);
+  await page.click('#lorerev_int_box summary'); await page.click('#lorerev_rules_box summary');
   await page.click('[data-restore="light"]');
   await page.click('#lorerev_rules_reset');
+  await closePrompts();
   await fake.reset();
   await fake.queue([{ content: '[{"id":"{{id:Currency}}","content":"Silver crowns and gold marks."}]' }]);
   await send('X: again with defaults.');
@@ -689,19 +697,22 @@ try {
   check('X: Restore default puts the original wording and rules back in the request', /## Rewrite intensity: Light touch\nLIGHT TOUCH\. Change only what MUST change/.test(xDef) && xDef.includes('## Reply format (strict)') && !xDef.includes('(mine)'));
   check('X: restored defaults leave no overrides in settings', await page.evaluate(() => { const s = SillyTavern.getContext().extensionSettings.LoreReviser; return JSON.stringify(s.intensityTexts) === '{}' && s.formatRules === ''; }));
   // rules that would break parsing: loud warning in the UI and in the chat, request still goes out, the (bad) reply is handled
+  await openPrompts();
+  await page.click('#lorerev_rules_box summary');
   await page.fill('#lorerev_rules', 'Reply as a short poem.');
   check('X: UI warns about rules that break parsing', (await page.isVisible('#lorerev_rules_warn')) && /JSON array of \{id, keys\?, secondary_keys\?, content\?, note\?\}/.test(await page.textContent('#lorerev_rules_warn')));
+  await closePrompts();
   await fake.reset();
   await fake.queue([{ content: 'Roses are red, violets are blue.' }]);
   await send('X: with broken rules.');
   await page.waitForFunction(() => document.querySelectorAll('.lorerev_msg').length > 0 && /may break reading/.test(document.querySelector('#lorerev_chat').textContent));
   await page.waitForFunction(() => !document.querySelector('.lorerev_loading'), null, { timeout: 15000 }).catch(() => {});
   check('X: chat warns that edited rules may break reading; request still sent with them', /Reply as a short poem\./.test(await sysOf()) && /Sending anyway/.test(await page.locator('#lorerev_chat').textContent()));
-  await page.click('#lorerev_int_box summary'); await page.click('#lorerev_rules_box summary'); // collapse so the chat is visible
   await shot('40-rules-warning-chat.png');
+  await openPrompts();
   await page.click('#lorerev_rules_box summary');
   await page.click('#lorerev_rules_reset');
-  await page.click('#lorerev_rules_box summary');
+  await closePrompts();
   await page.fill('#lorerev_input', '');
 
   // ================= Y. change type: Development (default) / Retcon, editable wording, applies on Send and Regenerate =================
@@ -732,21 +743,25 @@ try {
   check('Y: attempt 1 keeps the type it was made with', /Change type: Retcon/.test(await card('Currency').locator('.lorerev_attempt_info').textContent()));
   // editable wording + Restore default
   await page.selectOption('#lorerev_changetype', 'retcon');
+  await openPrompts();
   await page.click('#lorerev_ct_box summary');
   await page.fill('.lorerev_ct_text[data-type="retcon"]', 'RETCON (mine): write it as always true.');
   check('Y: only the edited type is stored', JSON.stringify(await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.changeTypeTexts)) === '{"retcon":"RETCON (mine): write it as always true."}' && (await page.evaluate(() => SillyTavern.getContext().extensionSettings.LoreReviser.changeType)) === 'retcon');
   await page.evaluate(() => document.querySelector('#lorerev_ct_box').scrollIntoView({ block: 'start' }));
   await shot('42-change-type.png');
+  await closePrompts();
   await fake.reset(); await fake.queue(REPLY_Y);
   await send('Y: edited retcon wording.');
   await page.waitForFunction((n) => document.querySelectorAll('.lorerev_session').length === n + 3, nSess);
   const yEd = await sysOf();
   check('Y: edited wording used under the fixed heading', yEd.includes('## Change type: Retcon\nRETCON (mine): write it as always true.') && !/RETCON\. The change/.test(yEd));
+  await openPrompts();
+  await page.click('#lorerev_ct_box summary');
   await page.click('[data-restore-ct="retcon"]');
   check('Y: Restore default brings the original wording back and clears the override', (await page.inputValue('.lorerev_ct_text[data-type="retcon"]')).startsWith('RETCON. The change is') && (await page.evaluate(() => JSON.stringify(SillyTavern.getContext().extensionSettings.LoreReviser.changeTypeTexts))) === '{}');
+  await closePrompts();
   const hdr = await page.$$eval('.lorerev_header > *', els => els.map(e => e.getBoundingClientRect()).filter(r => r.width).map(r => Math.round(r.right)));
   check('Y: header controls fit inside the modal', Math.max(...hdr) <= (await page.locator('.lorerev_root').boundingBox()).x + (await page.locator('.lorerev_root').boundingBox()).width + 1);
-  await page.click('#lorerev_ct_box summary');
   await page.selectOption('#lorerev_changetype', 'development');
 
   check('lorebooks back exactly as they were (every approval in this flow was undone)', (await snapshot()) === before);
